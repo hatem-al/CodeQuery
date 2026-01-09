@@ -191,31 +191,39 @@ def get_chromadb_client():
     
     try:
         # Try PersistentClient (0.4+)
-        if Settings:
-            _CHROMA_CLIENT = chromadb.PersistentClient(
-                path=str(CHROMA_DB_PATH),
-                settings=Settings(anonymized_telemetry=False)
-            )
+        if hasattr(chromadb, 'PersistentClient'):
+            if Settings:
+                _CHROMA_CLIENT = chromadb.PersistentClient(
+                    path=str(CHROMA_DB_PATH),
+                    settings=Settings(anonymized_telemetry=False)
+                )
+            else:
+                _CHROMA_CLIENT = chromadb.PersistentClient(path=str(CHROMA_DB_PATH))
+            print(f"✓ Initialized persistent ChromaDB at {CHROMA_DB_PATH}")
         else:
-            _CHROMA_CLIENT = chromadb.PersistentClient(path=str(CHROMA_DB_PATH))
-        print(f"✓ Initialized persistent ChromaDB at {CHROMA_DB_PATH}")
-    except (AttributeError, TypeError, Exception) as e:
-        # Try alternative initialization methods
-        try:
-            # Try without Settings
-            _CHROMA_CLIENT = chromadb.PersistentClient(path=str(CHROMA_DB_PATH))
-            print(f"✓ Initialized persistent ChromaDB (without Settings) at {CHROMA_DB_PATH}")
-        except Exception as e2:
-            # Last resort: in-memory client (WARNING: data will be lost on restart)
-            import warnings
-            warnings.warn(
-                f"Failed to initialize persistent ChromaDB: {e2}. "
-                f"Falling back to in-memory mode. Data will be lost on server restart. "
-                f"Please check ChromaDB installation and permissions for {CHROMA_DB_PATH}",
-                RuntimeWarning
-            )
-            _CHROMA_CLIENT = chromadb.Client()
-            print(f"⚠ WARNING: Using in-memory ChromaDB. Data will not persist!")
+            # ChromaDB 0.3.x API - use Client with Settings
+            if Settings:
+                _CHROMA_CLIENT = chromadb.Client(
+                    Settings(
+                        chroma_db_impl="duckdb+parquet",
+                        persist_directory=str(CHROMA_DB_PATH),
+                        anonymized_telemetry=False
+                    )
+                )
+                print(f"✓ Initialized persistent ChromaDB 0.3.x at {CHROMA_DB_PATH}")
+            else:
+                raise Exception("Settings module not available for ChromaDB 0.3.x")
+    except Exception as e:
+        # Last resort: in-memory client (WARNING: data will be lost on restart)
+        import warnings
+        warnings.warn(
+            f"Failed to initialize persistent ChromaDB: {e}. "
+            f"Falling back to in-memory mode. Data will be lost on server restart. "
+            f"Please check ChromaDB installation and permissions for {CHROMA_DB_PATH}",
+            RuntimeWarning
+        )
+        _CHROMA_CLIENT = chromadb.Client()
+        print(f"⚠ WARNING: Using in-memory ChromaDB. Data will not persist!")
 
     return _CHROMA_CLIENT
 
@@ -396,6 +404,15 @@ def store_in_chromadb(chunks: List[Dict[str, str]], embeddings: List[List[float]
             metadatas=metadatas
         )
         print(f"✓ Successfully stored {len(chunks)} chunks in ChromaDB")
+        
+        # Persist data for ChromaDB 0.3.x (required for disk persistence)
+        try:
+            if hasattr(client, 'persist'):
+                client.persist()
+                print(f"✓ Persisted data to disk")
+        except Exception as persist_error:
+            print(f"⚠ Warning: Could not persist data: {persist_error}")
+            
     except Exception as e:
         print(f"✗ Error storing in ChromaDB: {e}")
         raise
