@@ -1,0 +1,84 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+*.pyc
+
+# Environment variables
+.env
+.env.local
+.env.production
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Build outputs
+dist/
+build/
+*.egg-info/
+.next/
+out/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.cursor/
+
+# Database - SQLite
+data/users.db
+data/users.db-shm
+data/users.db-wal
+data/*.db
+data/*.db-*
+
+# ChromaDB
+data/chroma_db/
+data/indexed_repos*.json
+
+# Temporary files
+*.tmp
+*.log
+temp/
+tmp/
+.vercel
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files
+backend/tests/
+coverage/
+.coverage
+htmlcov/
+
+# Docker (not used)
+docker-compose.yml
+Dockerfile*
+nginx.conf
+
+# Documentation (keep only README.md)
+DEPLOYMENT_GUIDE.md
+FINAL_CHECKLIST.md
+PUSH_TO_GITHUB.md
+REPO_READY.md
+CONTRIBUTING.md
+*.txt
+
+# Deployment configs (optional)
+vercel.json
+render.yaml
+
