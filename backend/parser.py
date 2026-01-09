@@ -10,6 +10,11 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 import git
 
+# Repository size limits to prevent timeouts and excessive costs
+MAX_FILES = 1000  # Maximum number of files to parse
+MAX_CHUNKS = 5000  # Maximum number of code chunks to generate
+MAX_REPO_SIZE_MB = 200  # Maximum repository size in MB
+
 # Tree-sitter imports (optional - will fallback if not available)
 try:
     import tree_sitter
@@ -65,20 +70,42 @@ def clone_repo(repo_url: str, temp_dir: Optional[str] = None) -> str:
 def find_code_files(repo_path: str) -> List[str]:
     """
     Find all code files in the repository based on file extensions.
+    Limits the number of files to prevent timeouts on large repositories.
     
     Args:
         repo_path: Path to the repository root directory
     
     Returns:
-        List of file paths relative to repo_path
+        List of file paths relative to repo_path (limited to MAX_FILES)
+    
+    Raises:
+        ValueError: If repository exceeds size limits
     """
     code_files = []
     repo_path_obj = Path(repo_path)
+    
+    # Check repository size
+    total_size = 0
+    for file_path in repo_path_obj.rglob('*'):
+        if file_path.is_file():
+            total_size += file_path.stat().st_size
+    
+    total_size_mb = total_size / (1024 * 1024)
+    if total_size_mb > MAX_REPO_SIZE_MB:
+        raise ValueError(
+            f"Repository too large: {total_size_mb:.1f}MB (max {MAX_REPO_SIZE_MB}MB). "
+            f"Please try a smaller repository."
+        )
     
     # Directories to skip
     skip_dirs = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', 'env', 'dist', 'build'}
     
     for file_path in repo_path_obj.rglob('*'):
+        # Stop if we've reached the file limit
+        if len(code_files) >= MAX_FILES:
+            print(f"⚠ Warning: Reached maximum file limit ({MAX_FILES} files). Stopping file discovery.")
+            break
+        
         # Skip directories
         if file_path.is_dir():
             continue
@@ -368,29 +395,36 @@ def parse_repo(repo_url: str, temp_dir: Optional[str] = None, cleanup: bool = Tr
     created_temp_dir = temp_dir is None
     
     try:
-        # Clone the repository
-        repo_path = clone_repo(repo_url, temp_dir)
+    # Clone the repository
+    repo_path = clone_repo(repo_url, temp_dir)
     
-        # Find all code files
-        code_files = find_code_files(repo_path)
+    # Find all code files
+    code_files = find_code_files(repo_path)
+    
+    # Parse and chunk files
+    all_chunks = []
         
-        # Parse and chunk files
-        all_chunks = []
-        
-        for file_path in code_files:
-            file_ext = Path(file_path).suffix
+        print(f"Found {len(code_files)} code files to parse...")
+    
+    for file_path in code_files:
+            # Check if we've exceeded chunk limit
+            if len(all_chunks) >= MAX_CHUNKS:
+                print(f"⚠ Warning: Reached maximum chunk limit ({MAX_CHUNKS} chunks). Stopping parsing.")
+                break
             
+        file_ext = Path(file_path).suffix
+        
             try:
-                if file_ext == '.py':
-                    # Parse Python files using AST
-                    chunks = chunk_python_file(file_path, repo_path)
-                    all_chunks.extend(chunks)
+        if file_ext == '.py':
+            # Parse Python files using AST
+            chunks = chunk_python_file(file_path, repo_path)
+                    all_chunks.extend(chunks[:MAX_CHUNKS - len(all_chunks)])  # Don't exceed limit
                 elif file_ext in LANGUAGE_MAP:
                     # Parse other languages using tree-sitter or pattern matching
                     language = LANGUAGE_MAP[file_ext]
                     chunks = chunk_with_tree_sitter(file_path, repo_path, language)
                     if chunks:
-                        all_chunks.extend(chunks)
+                        all_chunks.extend(chunks[:MAX_CHUNKS - len(all_chunks)])
                     else:
                         # Fallback to entire file if parsing fails
                         full_path = Path(repo_path) / file_path
@@ -409,27 +443,34 @@ def parse_repo(repo_url: str, temp_dir: Optional[str] = None, cleanup: bool = Tr
                         except Exception as e:
                             print(f"Error processing {file_path}: {e}")
                             continue
-                else:
+        else:
                     # Unknown file type - add as single chunk
-                    full_path = Path(repo_path) / file_path
-                    try:
-                        with open(full_path, 'r', encoding='utf-8') as f:
-                            source_code = f.read()
-                            lines = source_code.split('\n')
-                        
-                        all_chunks.append({
-                            'code': source_code,
-                            'file': file_path,
-                            'type': 'file',
-                            'name': Path(file_path).stem,
-                            'lines': f"1-{len(lines)}"
-                        })
-                    except Exception as e:
-                        print(f"Error processing {file_path}: {e}")
-                        continue
+            full_path = Path(repo_path) / file_path
+            try:
+                with open(full_path, 'r', encoding='utf-8') as f:
+                    source_code = f.read()
+                    lines = source_code.split('\n')
+                
+                all_chunks.append({
+                    'code': source_code,
+                    'file': file_path,
+                    'type': 'file',
+                    'name': Path(file_path).stem,
+                    'lines': f"1-{len(lines)}"
+                })
             except Exception as e:
                 print(f"Error processing {file_path}: {e}")
                 continue
+            except Exception as e:
+                print(f"Error processing {file_path}: {e}")
+                continue
+        
+        # Final check for chunk limit
+        if len(all_chunks) > MAX_CHUNKS:
+            print(f"⚠ Truncating to {MAX_CHUNKS} chunks (had {len(all_chunks)})")
+            all_chunks = all_chunks[:MAX_CHUNKS]
+        
+        print(f"✓ Parsed {len(all_chunks)} code chunks from {len(code_files)} files")
         
         return all_chunks, repo_path if not cleanup else None
         

@@ -488,7 +488,16 @@ async def index_repository_background(repo_url: str, user_id: str, force_reindex
             "stage": "Parsing code files...",
             "progress": 20
         })
-        chunks, _ = parse_repo(repo_url, cleanup=True)
+        
+        try:
+            chunks, _ = parse_repo(repo_url, cleanup=True)
+        except ValueError as ve:
+            # Handle repository size/limit errors
+            indexing_progress[repo_url].update({
+                "status": "error",
+                "error": str(ve)
+            })
+            return
         
         if not chunks:
             indexing_progress[repo_url].update({
@@ -585,7 +594,17 @@ async def index_repository(
         # For now, run synchronously (can be made async with background_tasks)
         # Parse repository (cleanup temp dir automatically)
         logger.info("Parsing repository...")
-        chunks, _ = parse_repo(repo_url, cleanup=True)
+        try:
+            chunks, _ = parse_repo(repo_url, cleanup=True)
+        except ValueError as ve:
+            # Handle repository size/limit errors
+            error_msg = str(ve)
+            logger.error(f"Repository validation error: {error_msg}")
+            raise HTTPException(
+                status_code=400,
+                detail=error_msg
+            )
+        
         logger.info(f"Parsed {len(chunks)} code chunks")
         
         if not chunks:
@@ -676,8 +695,8 @@ async def query_code(request: Request, query_request: QueryRequest):
             logger.error(f"Collection not found: {error_msg}")
             # Provide helpful error message
             if "not found" in error_msg.lower() or "does not exist" in error_msg.lower():
-                raise HTTPException(
-                    status_code=404,
+            raise HTTPException(
+                status_code=404,
                     detail=f"Repository collection not found. This may happen if ChromaDB was restarted (in-memory mode). Please re-index the repository: {repo_id}"
                 )
             raise HTTPException(
@@ -969,8 +988,8 @@ async def chat_with_codebase(
             logger.error(f"Collection not found: {error_msg}")
             # Provide helpful error message for in-memory ChromaDB issue
             if "not found" in error_msg.lower() or "does not exist" in error_msg.lower() or "empty" in error_msg.lower():
-                raise HTTPException(
-                    status_code=404,
+            raise HTTPException(
+                status_code=404,
                     detail=f"Repository collection not found or empty. This may happen if ChromaDB was restarted (in-memory mode). Please re-index the repository: {repo_id}"
                 )
             raise HTTPException(
@@ -1002,16 +1021,16 @@ async def chat_with_codebase(
             all_results = search_code(query, collection, top_k=5, similarity_threshold=0.0)
             if all_results:
                 logger.info(f"Found {len(all_results)} results but all below 0.2 similarity threshold")
-                return ChatResponse(
+            return ChatResponse(
                     answer=f"I found some code, but it's not very relevant to your question (similarity scores were too low). Try rephrasing your query to be more specific. For example:\n- \"How does authentication work in this codebase?\"\n- \"Show me the main function\"\n- \"What classes are defined?\"\n\nYour query: \"{query}\"",
                     sources=[]
                 )
             else:
                 logger.warning(f"No results found even with threshold=0.0. Collection might be empty.")
-                return ChatResponse(
+            return ChatResponse(
                     answer="I couldn't find any relevant code in the repository for your question. This might mean:\n1. The repository hasn't been indexed yet (try indexing it first)\n2. Your query doesn't match any code in the repository\n3. The collection might be empty\n\nTry rephrasing your query or asking about a different topic. For example:\n- \"How does authentication work?\"\n- \"Show me the main function\"\n- \"What classes are defined in this codebase?\"",
-                    sources=[]
-                )
+                sources=[]
+            )
         
         # Organize chunks by file type and content type
         organized_chunks = rag_engine.organize_chunks(search_results)
@@ -1139,8 +1158,8 @@ Answer by analyzing the implementation logic and explaining how the code works."
                     detail="OpenAI rate limit exceeded. Please wait a moment and try again."
                 )
             elif "invalid_api_key" in error_msg.lower() or "401" in error_msg:
-                raise HTTPException(
-                    status_code=500,
+            raise HTTPException(
+                status_code=500,
                     detail="OpenAI API key is invalid. Please check your configuration."
                 )
             elif "insufficient_quota" in error_msg.lower():
@@ -1149,10 +1168,10 @@ Answer by analyzing the implementation logic and explaining how the code works."
                     detail="OpenAI API quota exceeded. Please check your account."
                 )
             else:
-                raise HTTPException(
-                    status_code=500,
+            raise HTTPException(
+                status_code=500,
                     detail=f"Error generating answer: {error_msg}"
-                )
+            )
         
     except HTTPException:
         raise
