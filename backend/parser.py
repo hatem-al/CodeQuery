@@ -28,6 +28,16 @@ except ImportError:
 # Supported code file extensions
 CODE_EXTENSIONS = {'.py', '.js', '.ts', '.tsx', '.jsx', '.java', '.cpp', '.c', '.h', '.hpp', '.cc', '.cxx'}
 
+# Priority files that should always be included and ranked higher
+PRIORITY_FILES = {
+    'README.md', 'readme.md', 'README.txt',
+    'main.py', 'app.py', '__init__.py', '__main__.py',
+    'index.js', 'index.ts', 'server.js', 'app.js',
+    'App.jsx', 'App.tsx', 'index.jsx', 'index.tsx',
+    'Main.java', 'Application.java',
+    'main.cpp', 'main.c', 'main.go'
+}
+
 # Language mapping for tree-sitter
 LANGUAGE_MAP = {
     '.js': 'javascript',
@@ -98,7 +108,30 @@ def find_code_files(repo_path: str) -> List[str]:
         )
     
     # Directories to skip
-    skip_dirs = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', 'env', 'dist', 'build'}
+    skip_dirs = {
+        '.git', '__pycache__', 'node_modules', '.venv', 'venv', 'env', 
+        'dist', 'build', 'target', 'out', 'bin', 'obj',
+        'vendor', 'packages', 'lib', 'libs',
+        'javadoc', 'docs', 'documentation', 'apidocs',
+        'test', 'tests', '__tests__', 'spec', 'specs',
+        'coverage', '.pytest_cache', '.tox',
+        'bower_components', 'jspm_packages',
+        '.next', '.nuxt', '.cache', 'public/build',
+        'site-packages', 'egg-info'
+    }
+    
+    # File patterns to skip
+    skip_file_patterns = [
+        '.min.js', '.min.css',           # Minified files
+        '.bundle.js', '.chunk.js',        # Bundled files
+        'jquery', 'bootstrap', 'lodash',  # Common libraries
+        'bundle', 'vendor', 'polyfill',   # Vendor code
+        '.generated.', '.g.dart',         # Generated files
+        'proto_pb', '.pb.go',             # Protocol buffers
+        'migration', 'seed',              # Database migrations
+        '.test.', '.spec.',               # Test files
+        '.min.', 'minified',              # Any minified
+    ]
     
     for file_path in repo_path_obj.rglob('*'):
         # Stop if we've reached the file limit
@@ -118,9 +151,50 @@ def find_code_files(repo_path: str) -> List[str]:
         if file_path.suffix in CODE_EXTENSIONS:
             # Get relative path from repo root
             rel_path = file_path.relative_to(repo_path_obj)
-            code_files.append(str(rel_path))
+            rel_path_str = str(rel_path)
+            
+            # Skip if matches skip patterns
+            full_path = str(file_path)
+            if should_skip_file(full_path, skip_file_patterns) or should_skip_file(rel_path_str, skip_file_patterns):
+                continue
+            
+            code_files.append(rel_path_str)
     
     return sorted(code_files)
+
+
+def should_skip_file(file_path: str, skip_file_patterns: List[str]) -> bool:
+    """
+    Check if a file should be skipped based on patterns.
+    Returns True if file should be skipped.
+    """
+    file_path_lower = file_path.lower()
+    
+    # Skip test files
+    if '/test/' in file_path_lower or '/tests/' in file_path_lower:
+        return True
+    
+    # Skip documentation
+    if '/doc/' in file_path_lower or '/docs/' in file_path_lower:
+        return True
+    
+    # Skip if matches any pattern
+    for pattern in skip_file_patterns:
+        if pattern.lower() in file_path_lower:
+            return True
+    
+    # Skip very large files (likely minified or generated)
+    try:
+        full_path = Path(file_path) if Path(file_path).is_absolute() else file_path
+        if os.path.exists(full_path):
+            file_size = os.path.getsize(full_path)
+            # Skip files larger than 500KB (likely minified libraries)
+            if file_size > 500_000:
+                return True
+    except:
+        pass
+    
+    return False
 
 
 def chunk_python_file(file_path: str, repo_path: str) -> List[Dict[str, str]]:
@@ -472,6 +546,9 @@ def parse_repo(repo_url: str, temp_dir: Optional[str] = None, cleanup: bool = Tr
         
         print(f"✓ Parsed {len(all_chunks)} code chunks from {len(code_files)} files")
         
+        # Prioritize important files
+        all_chunks = prioritize_chunks(all_chunks)
+        
         return all_chunks, repo_path if not cleanup else None
         
     except Exception as e:
@@ -492,6 +569,24 @@ def parse_repo(repo_url: str, temp_dir: Optional[str] = None, cleanup: bool = Tr
             except Exception as e:
                 print(f"⚠ Warning: Failed to cleanup temporary directory {repo_path}: {e}")
                 # Don't raise - we've already parsed the repo successfully
+
+
+def prioritize_chunks(chunks: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """
+    Prioritize chunks so important files appear first in search results.
+    This helps with queries like "what does this project do?"
+    """
+    priority = []
+    normal = []
+    
+    for chunk in chunks:
+        filename = os.path.basename(chunk['file'])
+        if filename in PRIORITY_FILES:
+            priority.append(chunk)
+        else:
+            normal.append(chunk)
+    
+    return priority + normal
 
 
 if __name__ == '__main__':
