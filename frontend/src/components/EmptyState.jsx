@@ -12,6 +12,61 @@ export default function EmptyState({ onRepoIndexed }) {
   const [isIndexing, setIsIndexing] = useState(false);
   const [error, setError] = useState(null);
 
+  const pollIndexingStatus = async (repoUrl) => {
+    const maxAttempts = 60;
+    let attempts = 0;
+    
+    const poll = async () => {
+      try {
+        const encodedUrl = encodeURIComponent(repoUrl);
+        const response = await axios.get(`${API_BASE_URL}/index/status/${encodedUrl}`);
+        const status = response.data;
+        
+        if (status.status === 'completed') {
+          if (onRepoIndexed) {
+            onRepoIndexed(repoUrl);
+          }
+          setRepoUrl('');
+          setIsIndexing(false);
+          return true;
+        } else if (status.status === 'error') {
+          setError(status.error || 'Failed to index repository. Please try again.');
+          setIsIndexing(false);
+          return true;
+        } else if (status.status === 'already_indexed') {
+          if (onRepoIndexed) {
+            onRepoIndexed(repoUrl);
+          }
+          setIsIndexing(false);
+          return true;
+        }
+        
+        attempts++;
+        if (attempts < maxAttempts) {
+          setTimeout(poll, 5000);
+        } else {
+          setError('Indexing is taking longer than expected. Please check back later.');
+          setIsIndexing(false);
+        }
+      } catch (err) {
+        if (err.response?.status === 404) {
+          attempts++;
+          if (attempts < maxAttempts) {
+            setTimeout(poll, 5000);
+          } else {
+            setError('Failed to track indexing progress.');
+            setIsIndexing(false);
+          }
+        } else {
+          setError('Error checking indexing status.');
+          setIsIndexing(false);
+        }
+      }
+    };
+    
+    setTimeout(poll, 2000);
+  };
+
   const handleIndex = async () => {
     if (!repoUrl.trim()) {
       setError('Please enter a GitHub repository URL');
@@ -39,7 +94,7 @@ export default function EmptyState({ onRepoIndexed }) {
         },
         {
           headers: { Authorization: `Bearer ${token}` },
-          timeout: 300000
+          timeout: 30000
         }
       );
 
@@ -48,6 +103,9 @@ export default function EmptyState({ onRepoIndexed }) {
           onRepoIndexed(response.data.repo_id);
         }
         setRepoUrl('');
+        setIsIndexing(false);
+      } else if (response.data.status === 'indexing') {
+        pollIndexingStatus(trimmedUrl);
       }
     } catch (err) {
       let errorMessage = 'Failed to index repository. Please try again.';
@@ -56,12 +114,13 @@ export default function EmptyState({ onRepoIndexed }) {
         errorMessage = 'Cannot connect to backend. Please check your connection.';
       } else if (err.response?.status === 404) {
         errorMessage = 'Repository not found or is private.';
+      } else if (err.response?.status === 400 && err.response?.data?.detail) {
+        errorMessage = err.response.data.detail;
       } else if (err.response?.data?.detail) {
         errorMessage = err.response.data.detail;
       }
       
       setError(errorMessage);
-    } finally {
       setIsIndexing(false);
     }
   };

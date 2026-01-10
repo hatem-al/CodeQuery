@@ -51,6 +51,77 @@ export default function RepoInput({ onRepoIndexed, currentRepo }) {
     }
   };
 
+  const pollIndexingStatus = async (repoUrl) => {
+    const maxAttempts = 60; // Poll for up to 5 minutes (5 seconds * 60 = 5 min)
+    let attempts = 0;
+    
+    const poll = async () => {
+      try {
+        const encodedUrl = encodeURIComponent(repoUrl);
+        const response = await axios.get(`${API_BASE_URL}/index/status/${encodedUrl}`);
+        const status = response.data;
+        
+        // Update stage
+        setIndexingStage(status.stage || 'Indexing...');
+        
+        if (status.status === 'completed') {
+          // Success!
+          setIndexStatus({
+            status: 'indexed',
+            chunks_indexed: status.chunks_indexed
+          });
+          await loadIndexedRepos();
+          if (onRepoIndexed) {
+            onRepoIndexed(repoUrl);
+          }
+          setRepoUrl('');
+          setIsIndexing(false);
+          return true;
+        } else if (status.status === 'error') {
+          // Error
+          setError(status.error || 'Failed to index repository. Please try again.');
+          setIsIndexing(false);
+          return true;
+        } else if (status.status === 'already_indexed') {
+          // Already indexed
+          setIndexStatus({
+            status: 'already_indexed',
+            chunks_indexed: status.chunks_indexed
+          });
+          await loadIndexedRepos();
+          setIsIndexing(false);
+          return true;
+        }
+        
+        // Still indexing, continue polling
+        attempts++;
+        if (attempts < maxAttempts) {
+          setTimeout(poll, 5000); // Poll every 5 seconds
+        } else {
+          setError('Indexing is taking longer than expected. Please check back later.');
+          setIsIndexing(false);
+        }
+      } catch (err) {
+        if (err.response?.status === 404) {
+          // No progress found yet, try again
+          attempts++;
+          if (attempts < maxAttempts) {
+            setTimeout(poll, 5000);
+          } else {
+            setError('Failed to track indexing progress. Please check back later.');
+            setIsIndexing(false);
+          }
+        } else {
+          setError('Error checking indexing status. Please refresh the page.');
+          setIsIndexing(false);
+        }
+      }
+    };
+    
+    // Start polling after a short delay
+    setTimeout(poll, 2000);
+  };
+
   const handleIndex = async (forceReindex = false) => {
     if (!repoUrl.trim()) {
       setError('Please enter a GitHub repository URL');
@@ -68,25 +139,29 @@ export default function RepoInput({ onRepoIndexed, currentRepo }) {
     setIsIndexing(true);
     setError(null);
     setIndexStatus(null);
-    setIndexingStage('Cloning repository...');
+    setIndexingStage('Starting indexing...');
 
     try {
       const response = await axios.post(`${API_BASE_URL}/index`, {
         repo_url: trimmedUrl,
         force_reindex: forceReindex
       }, {
-        timeout: 300000 // 5 minutes timeout for large repos
+        timeout: 30000 // 30 seconds for initial response
       });
 
-      setIndexStatus(response.data);
-      
       if (response.data.status === 'indexed' || response.data.status === 'already_indexed') {
+        // Already indexed (synchronous response)
+        setIndexStatus(response.data);
         await loadIndexedRepos();
         if (onRepoIndexed) {
           onRepoIndexed(response.data.repo_id);
         }
-        // Clear input after successful indexing
         setRepoUrl('');
+        setIsIndexing(false);
+      } else if (response.data.status === 'indexing') {
+        // Background indexing started, poll for status
+        setIndexingStage('Cloning repository...');
+        pollIndexingStatus(trimmedUrl);
       }
     } catch (err) {
       let errorMessage = 'Failed to index repository. Please try again.';
@@ -97,6 +172,9 @@ export default function RepoInput({ onRepoIndexed, currentRepo }) {
         errorMessage = 'Repository not found or is private. Please check the URL and try again.';
       } else if (err.response?.status === 429) {
         errorMessage = 'OpenAI rate limit exceeded. Please wait a moment and try again.';
+      } else if (err.response?.status === 400 && err.response?.data?.detail) {
+        // Handle repository size limit errors
+        errorMessage = err.response.data.detail;
       } else if (err.response?.data?.detail) {
         errorMessage = err.response.data.detail;
       } else if (err.message) {
@@ -104,7 +182,6 @@ export default function RepoInput({ onRepoIndexed, currentRepo }) {
       }
       
       setError(errorMessage);
-    } finally {
       setIsIndexing(false);
       setIndexingStage('');
     }
