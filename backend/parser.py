@@ -395,29 +395,29 @@ def parse_repo(repo_url: str, temp_dir: Optional[str] = None, cleanup: bool = Tr
     created_temp_dir = temp_dir is None
     
     try:
-    # Clone the repository
-    repo_path = clone_repo(repo_url, temp_dir)
-    
-    # Find all code files
-    code_files = find_code_files(repo_path)
-    
-    # Parse and chunk files
-    all_chunks = []
+        # Clone the repository
+        repo_path = clone_repo(repo_url, temp_dir)
+        
+        # Find all code files
+        code_files = find_code_files(repo_path)
+        
+        # Parse and chunk files
+        all_chunks = []
         
         print(f"Found {len(code_files)} code files to parse...")
-    
-    for file_path in code_files:
+        
+        for file_path in code_files:
             # Check if we've exceeded chunk limit
             if len(all_chunks) >= MAX_CHUNKS:
                 print(f"⚠ Warning: Reached maximum chunk limit ({MAX_CHUNKS} chunks). Stopping parsing.")
                 break
             
-        file_ext = Path(file_path).suffix
-        
+            file_ext = Path(file_path).suffix
+            
             try:
-        if file_ext == '.py':
-            # Parse Python files using AST
-            chunks = chunk_python_file(file_path, repo_path)
+                if file_ext == '.py':
+                    # Parse Python files using AST
+                    chunks = chunk_python_file(file_path, repo_path)
                     all_chunks.extend(chunks[:MAX_CHUNKS - len(all_chunks)])  # Don't exceed limit
                 elif file_ext in LANGUAGE_MAP:
                     # Parse other languages using tree-sitter or pattern matching
@@ -443,24 +443,24 @@ def parse_repo(repo_url: str, temp_dir: Optional[str] = None, cleanup: bool = Tr
                         except Exception as e:
                             print(f"Error processing {file_path}: {e}")
                             continue
-        else:
+                else:
                     # Unknown file type - add as single chunk
-            full_path = Path(repo_path) / file_path
-            try:
-                with open(full_path, 'r', encoding='utf-8') as f:
-                    source_code = f.read()
-                    lines = source_code.split('\n')
-                
-                all_chunks.append({
-                    'code': source_code,
-                    'file': file_path,
-                    'type': 'file',
-                    'name': Path(file_path).stem,
-                    'lines': f"1-{len(lines)}"
-                })
-            except Exception as e:
-                print(f"Error processing {file_path}: {e}")
-                continue
+                    full_path = Path(repo_path) / file_path
+                    try:
+                        with open(full_path, 'r', encoding='utf-8') as f:
+                            source_code = f.read()
+                            lines = source_code.split('\n')
+                        
+                        all_chunks.append({
+                            'code': source_code,
+                            'file': file_path,
+                            'type': 'file',
+                            'name': Path(file_path).stem,
+                            'lines': f"1-{len(lines)}"
+                        })
+                    except Exception as e:
+                        print(f"Error processing {file_path}: {e}")
+                        continue
             except Exception as e:
                 print(f"Error processing {file_path}: {e}")
                 continue
