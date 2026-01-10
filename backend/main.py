@@ -1136,11 +1136,12 @@ INSTRUCTIONS:
 6. EXPLAIN PURPOSE - For each code block, explain what problem it solves and how.
 7. USE ORGANIZATION - The code is organized by file type and content type. Use this organization to provide a structured answer.
 8. REFERENCE PREVIOUS CONTEXT - If this is a follow-up question, reference previous answers when relevant.
+9. FORMAT INLINE CODE CORRECTLY - When mentioning class names, variables, functions, use `backticks` WITHOUT newlines: "The `User` class has fields like `id`, `name`, and `role`" - NOT "The \n\nUser\n class has \n\nid\n"
 
-BAD: "Line 239 catches error. Line 240 returns response."
-GOOD: "The error handler implements a strategy for handling AI parsing failures. When an exception occurs during AI response processing, it catches the error, constructs a JSON response with both a user-friendly error message and the raw AI response content (for debugging), and returns it with HTTP status 500 to indicate a server error."
+BAD FORMATTING: "The \n\nUser\n class serves as the base model. It includes \n\nid\n, \n\nname\n, \n\nrole\n"
+GOOD FORMATTING: "The `User` class serves as the base model. It includes `id`, `name`, `role`"
 
-Answer by analyzing the implementation logic and explaining how the code works."""
+Answer by analyzing the implementation logic and explaining how the code works. REMEMBER: Keep inline code on the same line!"""
         
         messages.append({"role": "user", "content": user_prompt})
         
