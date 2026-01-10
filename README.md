@@ -1,186 +1,283 @@
-# CodeQuery
+# CodeQuery - AI-Powered Code Search
 
-> AI-powered semantic search for codebases using Retrieval-Augmented Generation
+CodeQuery is an intelligent code documentation assistant that uses RAG (Retrieval-Augmented Generation) to help you understand any GitHub repository through natural language queries.
 
-CodeQuery enables natural language search and exploration of GitHub repositories. The system indexes codebases, generates vector embeddings, and leverages GPT-4 to provide intelligent answers with relevant code context.
+![CodeQuery Demo](demo.gif) <!-- Add your video demo here -->
 
-## Features
+## ✨ Features
 
-- **Intelligent Indexing**: Automatically clone and index public GitHub repositories
-- **Natural Language Query**: Ask questions about code in plain English
-- **Contextual Responses**: Receive answers with relevant code snippets, file paths, and line numbers
-- **Multi-User Architecture**: Isolated user accounts with separate repository collections
-- **Multi-Language Support**: Python, JavaScript, TypeScript, Java, C++, and more
-- **Persistent Chat History**: Maintain conversation context across sessions
-- **Advanced RAG Pipeline**: Multi-hop retrieval with typo correction and query clarification
+- 🔍 **Semantic Code Search** - Find code by meaning, not just keywords
+- 🤖 **AI-Powered Explanations** - GPT-4 powered answers with code examples
+- 📚 **Multi-Language Support** - Python, JavaScript, TypeScript, Java, C++, Go, Rust, and more
+- 🔐 **User Authentication** - Secure user accounts with JWT tokens
+- 💾 **Persistent Storage** - SQLite database and ChromaDB vector storage
+- ⚡ **Real-Time Streaming** - Server-sent events for instant chat responses
+- 🎯 **Advanced RAG** - Multi-hop retrieval with query intent detection
+- 📊 **Source Attribution** - See exactly where information comes from
 
-## Architecture
+## 🎥 Video Demo
 
-### Frontend
-- React with Vite
-- Tailwind CSS for styling
-- Syntax highlighting via Prism
+[Watch the demo video](demo.mp4) <!-- Upload your video to the repo or YouTube -->
 
-### Backend
-- FastAPI (Python 3.11)
-- ChromaDB for vector storage
-- OpenAI API for embeddings and completions
-- SQLite for user management
-- Tree-sitter for multi-language code parsing
+## 🏗️ Architecture
 
-## Installation
+**Frontend:** React + Vite + Tailwind CSS + Josefin Sans  
+**Backend:** FastAPI (Python) + OpenAI API  
+**Database:** SQLite (users) + ChromaDB (embeddings)  
+**Parsing:** Python AST + tree-sitter for multi-language support
 
-### Prerequisites
+## 📋 Prerequisites
 
-- Node.js 18 or higher
-- Python 3.11 or higher
-- OpenAI API key
+- Python 3.9+
+- Node.js 18+
+- OpenAI API Key ([Get one here](https://platform.openai.com/api-keys))
+- Git
 
-### Local Development Setup
+## 🚀 Quick Start (Local Setup)
 
-**1. Clone the repository**
+### 1️⃣ Clone the Repository
+
 ```bash
-git clone https://github.com/yourusername/codequery.git
-cd codequery
+git clone https://github.com/hatem-al/CodeQuery.git
+cd CodeQuery
 ```
 
-**2. Configure the backend**
+### 2️⃣ Backend Setup
+
 ```bash
 cd backend
+
+# Create virtual environment
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Activate virtual environment
+# On macOS/Linux:
+source venv/bin/activate
+# On Windows:
+venv\Scripts\activate
+
+# Install dependencies
 pip install -r requirements.txt
+
+# Create .env file
+cat > .env << EOF
+OPENAI_API_KEY=your_openai_api_key_here
+JWT_SECRET_KEY=your_secret_key_here_change_in_production
+ALLOWED_ORIGINS=http://localhost:5173
+EOF
+
+# Run the backend
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-**3. Set environment variables**
+The backend will be available at: `http://localhost:8000`
 
-Create a `.env` file in the `backend` directory:
-```env
-OPENAI_API_KEY=your-openai-api-key
-SECRET_KEY=your-jwt-secret-key
-```
+### 3️⃣ Frontend Setup
 
-**4. Start the backend server**
-```bash
-uvicorn main:app --reload --port 8000
-```
+Open a **new terminal** window:
 
-**5. Configure the frontend** (in a new terminal)
 ```bash
 cd frontend
+
+# Install dependencies
 npm install
+
+# Create .env file
+cat > .env << EOF
+VITE_API_BASE_URL=http://localhost:8000
+EOF
+
+# Run the frontend
+npm run dev
 ```
 
-Create a `.env` file in the `frontend` directory:
+The frontend will be available at: `http://localhost:5173`
+
+### 4️⃣ Start Using CodeQuery
+
+1. Open `http://localhost:5173` in your browser
+2. **Register** a new account
+3. **Index a repository** (e.g., `https://github.com/username/repo`)
+4. Wait for indexing to complete (~2-5 minutes)
+5. **Ask questions** about the code!
+
+## 💡 Example Queries
+
+- "How does authentication work in this codebase?"
+- "Show me the main API endpoints"
+- "Explain the database schema"
+- "What error handling strategies are used?"
+- "How is data validation implemented?"
+- "Show me all the middleware functions"
+
+## 🛠️ Tech Stack
+
+### Frontend
+- **React 18** - UI framework
+- **Vite** - Build tool and dev server
+- **Tailwind CSS** - Utility-first CSS framework
+- **Axios** - HTTP client
+- **Josefin Sans** - Custom font
+
+### Backend
+- **FastAPI** - Modern Python web framework
+- **OpenAI API** - `text-embedding-3-small` for embeddings, `gpt-4o-mini` for chat
+- **ChromaDB** - Vector database for semantic search
+- **SQLAlchemy** - ORM for SQLite
+- **tree-sitter** - Multi-language code parser
+- **GitPython** - GitHub repository cloning
+- **bcrypt** - Password hashing
+- **PyJWT** - JWT token authentication
+- **slowapi** - Rate limiting
+
+## 📁 Project Structure
+
+```
+CodeQuery/
+├── backend/
+│   ├── main.py              # FastAPI app and API endpoints
+│   ├── auth.py              # Authentication logic
+│   ├── database.py          # SQLite database setup
+│   ├── embeddings.py        # OpenAI embeddings & ChromaDB
+│   ├── parser.py            # Code parsing (AST + tree-sitter)
+│   ├── retrieval.py         # Semantic search logic
+│   ├── rag_engine.py        # Advanced RAG with multi-hop search
+│   ├── utils/
+│   │   └── query_processor.py  # Typo detection & query processing
+│   └── requirements.txt     # Python dependencies
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx          # Main app component
+│   │   ├── components/      # React components
+│   │   │   ├── Header.jsx
+│   │   │   ├── Login.jsx
+│   │   │   ├── EmptyState.jsx
+│   │   │   ├── RepoInput.jsx
+│   │   │   ├── ChatInterface.jsx
+│   │   │   ├── CodeBlock.jsx
+│   │   │   ├── SourcesList.jsx
+│   │   │   └── LoadingSpinner.jsx
+│   │   └── main.jsx
+│   ├── package.json         # Node dependencies
+│   └── vite.config.js       # Vite configuration
+├── data/
+│   ├── chroma_db/           # ChromaDB vector storage (auto-created)
+│   └── users.db             # SQLite database (auto-created)
+└── README.md
+```
+
+## ⚙️ Configuration
+
+### Backend Environment Variables
+
+Create `backend/.env`:
+
+```env
+# Required
+OPENAI_API_KEY=sk-...                          # Your OpenAI API key
+
+# Optional (defaults shown)
+JWT_SECRET_KEY=your-secret-key-here            # JWT signing key
+ALLOWED_ORIGINS=http://localhost:5173          # CORS origins (comma-separated)
+```
+
+### Frontend Environment Variables
+
+Create `frontend/.env`:
+
 ```env
 VITE_API_BASE_URL=http://localhost:8000
 ```
 
-**6. Start the frontend development server**
-```bash
-npm run dev
-```
+## 🎨 Features Deep Dive
 
-**7. Access the application**
+### 1. Advanced RAG Engine
+- **Query Intent Detection** - Classifies queries as architecture, location, or usage questions
+- **Multi-Hop Search** - Iteratively searches for related concepts
+- **Concept Extraction** - Identifies related terms from retrieved code
+- **Smart Organization** - Groups code by file type and content type
 
-Navigate to `http://localhost:5173` in your browser.
+### 2. Typo Detection
+- Automatically corrects common programming term misspellings
+- Suggests alternatives for low-confidence search results
 
-## Deployment
+### 3. Repository Size Limits
+- **Max Repository Size:** 200 MB
+- **Max Files:** 1000
+- **Max Code Chunks:** 5000
+- Prevents timeouts and excessive API costs
 
-### Vercel (Frontend)
-
-1. Connect your GitHub repository to Vercel
-2. Configure the following settings:
-   - Root Directory: `frontend`
-   - Build Command: `npm run build`
-   - Output Directory: `dist`
-3. Set environment variable: `VITE_API_BASE_URL` (your backend URL)
-
-### Render (Backend)
-
-1. Create a new Web Service on Render
-2. Configure the following settings:
-   - Root Directory: `backend`
-   - Build Command: `pip install -r requirements.txt`
-   - Start Command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
-3. Set environment variables:
-   - `OPENAI_API_KEY`: Your OpenAI API key
-   - `SECRET_KEY`: Random string for JWT token signing
-4. Add persistent disk (1GB minimum) mounted at `/opt/render/project/src/data`
-
-## Usage
-
-1. Register a new account or log in
-2. Enter a GitHub repository URL (e.g., `https://github.com/facebook/react`)
-3. Wait for the indexing process to complete
-4. Query the codebase using natural language
-
-**Example Queries:**
-- "How does authentication work in this application?"
-- "Where is the database connection initialized?"
-- "Explain the main application entry point"
-- "Show me examples of API endpoint definitions"
-
-## Configuration
-
-### Supported Programming Languages
-
-- Python (`.py`)
-- JavaScript (`.js`, `.jsx`)
-- TypeScript (`.ts`, `.tsx`)
-- Java (`.java`)
-- C/C++ (`.c`, `.cpp`, `.h`, `.hpp`)
-
-### AI Models
-
-- **Embeddings**: `text-embedding-3-small` (OpenAI)
-- **Chat Completions**: `gpt-4o-mini` (OpenAI)
-
-## Technical Details
-
-### RAG Pipeline
-
-The system implements an advanced Retrieval-Augmented Generation pipeline:
-
-1. **Code Parsing**: Multi-language parsing using Tree-sitter
-2. **Chunking**: Intelligent code segmentation preserving semantic boundaries
-3. **Embedding**: Vector generation using OpenAI's embedding model
-4. **Storage**: Vector storage and similarity search via ChromaDB
-5. **Retrieval**: Multi-hop retrieval with query expansion
-6. **Generation**: Context-aware response generation using GPT-4
-
-### Security
-
+### 4. User Isolation
+- Each user has separate indexed repositories
+- ChromaDB collections are user-specific
 - JWT-based authentication
-- Bcrypt password hashing
-- User-isolated data storage
-- API rate limiting
-- Environment-based configuration
 
-## Contributing
+## 🔒 Security
 
-Contributions are welcome. Please follow these guidelines:
+- ✅ Password hashing with bcrypt
+- ✅ JWT token authentication
+- ✅ Rate limiting (slowapi)
+- ✅ CORS configuration
+- ✅ Input validation (Pydantic)
+- ✅ SQL injection protection (SQLAlchemy ORM)
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes with clear commit messages
-4. Submit a pull request with a detailed description
+## 📊 Performance
 
-For bug reports or feature requests, please open an issue on GitHub.
+- **Indexing Speed:** ~2-5 minutes for medium repos (50-200 files)
+- **Search Latency:** <500ms for semantic search
+- **Chat Response:** Streaming (real-time tokens)
+- **Concurrent Users:** Supports multiple users with rate limiting
 
-## License
+## 🐛 Troubleshooting
 
-This project is licensed under the MIT License. See the LICENSE file for details.
+### "OpenAI rate limit exceeded"
+- You've hit OpenAI's API rate limit
+- Wait a few minutes and try again
+- Consider upgrading your OpenAI plan
 
-## Author
+### "Repository too large"
+- The repository exceeds size limits (200 MB, 1000 files, or 5000 chunks)
+- Try a smaller repository
+- Adjust limits in `backend/parser.py` and `backend/main.py`
 
-Created by Hatem Almasri
+### "ChromaDB collection not found"
+- The repository needs to be re-indexed
+- Click "Force Re-index" on the repository
 
-## Acknowledgments
+### "Cannot connect to backend"
+- Make sure the backend is running: `http://localhost:8000`
+- Check that the `VITE_API_BASE_URL` in `frontend/.env` is correct
 
-- OpenAI for GPT-4 and embedding models
-- ChromaDB for vector database capabilities
-- Tree-sitter for language-agnostic code parsing
-- The FastAPI and React communities
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 👨‍💻 Author
+
+**Hatem Almasri**
+
+## 🙏 Acknowledgments
+
+- OpenAI for GPT-4 and embeddings API
+- ChromaDB for vector storage
+- FastAPI for the excellent Python web framework
+- React and Vite for the frontend tooling
 
 ---
+
+## 📝 Notes
+
+- The first indexing of a repository will download and parse all code files
+- Embeddings are cached in ChromaDB for fast subsequent queries
+- Chat history is stored in browser localStorage (per repository)
+- The app uses OpenAI's API, so you'll incur costs based on usage
+  - ~$0.10-0.50 per repository indexing (depending on size)
+  - ~$0.01-0.05 per chat query
+
+---
+
+**Enjoy exploring codebases with AI! 🚀**
