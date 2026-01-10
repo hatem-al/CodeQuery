@@ -268,9 +268,14 @@ class QueryResponse(BaseModel):
     results: List[QueryResult]
 
 
+class ChatMessage(BaseModel):
+    role: str  # 'user' or 'assistant'
+    content: str
+
 class ChatRequest(BaseModel):
     query: str
     repo_id: str
+    chat_history: Optional[List[Dict[str, str]]] = []  # Previous conversation context
     
     class Config:
         # Allow extra fields to be ignored (for backwards compatibility)
@@ -1072,8 +1077,9 @@ async def chat_with_codebase(
             if suggestions:
                 clarification_message += f"The search results have low confidence. Did you mean: {', '.join(suggestions[:3])}? "
         
-        # Build prompt for GPT-4o-mini
-        system_prompt = """You are a code documentation assistant. Your job is to ANALYZE and EXPLAIN the implementation logic, business rules, and data flow in the code.
+        # Build conversation messages with history
+        messages = [
+            {"role": "system", "content": """You are a code documentation assistant. Your job is to ANALYZE and EXPLAIN the implementation logic, business rules, and data flow in the code.
 
 CRITICAL INSTRUCTIONS:
 1. EXPLAIN THE LOGIC - Don't just describe syntax. Explain WHY the code does what it does and HOW it implements business logic.
@@ -1086,8 +1092,22 @@ CRITICAL INSTRUCTIONS:
 8. NO HEDGING - Avoid "likely", "probably", "seems", "appears", "we can infer". State what the code does based on what you see.
 9. EXPLAIN PURPOSE - For each code block, explain what problem it solves and how it solves it.
 10. TYPO ACKNOWLEDGMENT - If the query contained typos that were corrected, acknowledge the correction at the start of your response.
-11. CLARIFICATION - If search results are unclear or have low confidence, ask the user for clarification or suggest alternative queries."""
+11. CLARIFICATION - If search results are unclear or have low confidence, ask the user for clarification or suggest alternative queries.
+12. CONVERSATION CONTEXT - Remember previous questions and answers in the conversation. Reference them when relevant (e.g., "As I mentioned earlier..." or "Building on the previous answer...")."""}
+        ]
         
+        # Add conversation history (limit to last 6 messages to avoid context overflow)
+        chat_history = chat_request.chat_history or []
+        if chat_history:
+            # Take last 6 messages (3 exchanges)
+            recent_history = chat_history[-6:] if len(chat_history) > 6 else chat_history
+            for msg in recent_history:
+                messages.append({
+                    "role": msg.get("role", "user"),
+                    "content": msg.get("content", "")
+                })
+        
+        # Add current query with code context
         user_prompt = f"""{clarification_message}Analyze the code snippets below and answer: {query}
 
 CODE SNIPPETS:
@@ -1101,20 +1121,20 @@ INSTRUCTIONS:
 5. IGNORE UI - Skip React/JSX/HTML/CSS. Focus on server logic, functions, data processing, algorithms.
 6. EXPLAIN PURPOSE - For each code block, explain what problem it solves and how.
 7. USE ORGANIZATION - The code is organized by file type and content type. Use this organization to provide a structured answer.
+8. REFERENCE PREVIOUS CONTEXT - If this is a follow-up question, reference previous answers when relevant.
 
 BAD: "Line 239 catches error. Line 240 returns response."
 GOOD: "The error handler implements a strategy for handling AI parsing failures. When an exception occurs during AI response processing, it catches the error, constructs a JSON response with both a user-friendly error message and the raw AI response content (for debugging), and returns it with HTTP status 500 to indicate a server error."
 
 Answer by analyzing the implementation logic and explaining how the code works."""
         
+        messages.append({"role": "user", "content": user_prompt})
+        
         # Call GPT-4o-mini with retry logic
-        logger.info("Calling GPT-4o-mini...")
+        logger.info(f"Calling GPT-4o-mini with {len(messages)} messages (including {len(chat_history)} history messages)...")
         try:
             response = await call_openai_chat_with_retry(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
+                messages=messages,
                 model="gpt-4o-mini",
                 temperature=0.2,  # Very low temperature for precise, literal reading
                 max_tokens=3000  # More tokens for detailed explanations
