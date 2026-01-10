@@ -148,8 +148,23 @@ def generate_embeddings(chunks: List[Dict[str, str]]) -> List[List[float]]:
     
     print(f"Generating embeddings for {total_chunks} chunks...")
     
-    # Extract code text from chunks
-    texts = [chunk['code'] for chunk in chunks]
+    # Extract and clean code text from chunks
+    texts = []
+    for chunk in chunks:
+        code = chunk.get('code', '')
+        
+        # Skip empty or whitespace-only code
+        if not code or not code.strip():
+            print(f"⚠ Warning: Skipping empty chunk from {chunk.get('file', 'unknown')}")
+            code = "# Empty code chunk"  # Use placeholder instead of empty string
+        
+        # Truncate very long code (OpenAI limit is ~8191 tokens, roughly 32k chars)
+        # We'll be conservative and limit to 20k characters
+        if len(code) > 20000:
+            print(f"⚠ Warning: Truncating long chunk from {chunk.get('file', 'unknown')} ({len(code)} chars)")
+            code = code[:20000] + "\n# ... (truncated)"
+        
+        texts.append(code)
     
     # Process in batches
     for i in range(0, total_chunks, batch_size):
