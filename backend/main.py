@@ -864,7 +864,14 @@ CRITICAL INSTRUCTIONS:
 8. NO HEDGING - Avoid "likely", "probably", "seems", "appears", "we can infer". State what the code does based on what you see.
 9. EXPLAIN PURPOSE - For each code block, explain what problem it solves and how it solves it.
 10. TYPO ACKNOWLEDGMENT - If the query contained typos that were corrected, acknowledge the correction at the start of your response.
-11. CLARIFICATION - If search results are unclear or have low confidence, ask the user for clarification or suggest alternative queries."""
+11. CLARIFICATION - If search results are unclear or have low confidence, ask the user for clarification or suggest alternative queries.
+
+FORMATTING RULES:
+- Use `code` for inline code references (class names, variables, functions) - KEEP IT ON THE SAME LINE
+- Use ```language code blocks``` for multi-line code snippets ONLY
+- NEVER add newlines before or after inline code (`User` class, not User\nclass)
+- Write naturally: "The `User` class defines..." NOT "The \n\nUser\n class defines..."
+- Keep text flowing naturally without unnecessary line breaks"""
             
             user_prompt = f"""{clarification_message}Analyze the code snippets below and answer: {query}
 
@@ -1093,7 +1100,14 @@ CRITICAL INSTRUCTIONS:
 9. EXPLAIN PURPOSE - For each code block, explain what problem it solves and how it solves it.
 10. TYPO ACKNOWLEDGMENT - If the query contained typos that were corrected, acknowledge the correction at the start of your response.
 11. CLARIFICATION - If search results are unclear or have low confidence, ask the user for clarification or suggest alternative queries.
-12. CONVERSATION CONTEXT - Remember previous questions and answers in the conversation. Reference them when relevant (e.g., "As I mentioned earlier..." or "Building on the previous answer...")."""}
+12. CONVERSATION CONTEXT - Remember previous questions and answers in the conversation. Reference them when relevant (e.g., "As I mentioned earlier..." or "Building on the previous answer...").
+
+FORMATTING RULES:
+- Use `code` for inline code references (class names, variables, functions) - KEEP IT ON THE SAME LINE
+- Use ```language code blocks``` for multi-line code snippets ONLY
+- NEVER add newlines before or after inline code (`User` class, not User\nclass)
+- Write naturally: "The `User` class defines..." NOT "The \n\nUser\n class defines..."
+- Keep text flowing naturally without unnecessary line breaks"""}
         ]
         
         # Add conversation history (limit to last 6 messages to avoid context overflow)
