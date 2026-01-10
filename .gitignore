@@ -76,7 +76,8 @@ FINAL_CHECKLIST.md
 PUSH_TO_GITHUB.md
 REPO_READY.md
 CONTRIBUTING.md
-*.txt
+START_HERE.txt
+CLEANUP_SUMMARY.txt
 
 # Deployment configs (optional)
 vercel.json
