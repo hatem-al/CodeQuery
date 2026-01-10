@@ -866,12 +866,16 @@ CRITICAL INSTRUCTIONS:
 10. TYPO ACKNOWLEDGMENT - If the query contained typos that were corrected, acknowledge the correction at the start of your response.
 11. CLARIFICATION - If search results are unclear or have low confidence, ask the user for clarification or suggest alternative queries.
 
-FORMATTING RULES:
-- Use `code` for inline code references (class names, variables, functions) - KEEP IT ON THE SAME LINE
-- Use ```language code blocks``` for multi-line code snippets ONLY
-- NEVER add newlines before or after inline code (`User` class, not User\nclass)
-- Write naturally: "The `User` class defines..." NOT "The \n\nUser\n class defines..."
-- Keep text flowing naturally without unnecessary line breaks"""
+CRITICAL FORMATTING RULES (MUST FOLLOW):
+- Use inline backticks for code: `User`, `id`, `name`, `role`, `email` - ALL ON THE SAME LINE
+- NEVER EVER put newlines around inline code - this breaks the UI
+- BAD: "The \n\nUser\n class" or "The User\n class"
+- GOOD: "The `User` class"
+- BAD: "includes \n\nid\n, \n\nname\n"
+- GOOD: "includes `id`, `name`, `role`"
+- Multi-line code goes in ```language blocks``` ONLY
+- Write in continuous paragraphs without random line breaks
+- Test yourself: Does your response look like natural English prose? If not, remove newlines."""
             
             user_prompt = f"""{clarification_message}Analyze the code snippets below and answer: {query}
 
