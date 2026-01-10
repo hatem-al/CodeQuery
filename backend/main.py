@@ -587,45 +587,27 @@ async def index_repository(
         if repo_url in indexing_progress and indexing_progress[repo_url]["status"] in ["cloning", "parsing", "embedding", "storing"]:
             return IndexResponse(
                 status="indexing",
-                chunks_indexed=0,
+                chunks_indexed=indexing_progress[repo_url].get("chunks_indexed", 0),
                 repo_id=repo_url
             )
         
-        # For now, run synchronously (can be made async with background_tasks)
-        # Parse repository (cleanup temp dir automatically)
-        logger.info("Parsing repository...")
-        try:
-            chunks, _ = parse_repo(repo_url, cleanup=True)
-        except ValueError as ve:
-            # Handle repository size/limit errors
-            error_msg = str(ve)
-            logger.error(f"Repository validation error: {error_msg}")
-            raise HTTPException(
-                status_code=400,
-                detail=error_msg
-            )
+        # Run in background to avoid timeout
+        background_tasks.add_task(index_repository_background, repo_url, user_id, force_reindex)
         
-        logger.info(f"Parsed {len(chunks)} code chunks")
+        # Initialize progress tracking
+        indexing_progress[repo_url] = {
+            "status": "starting",
+            "stage": "Starting indexing...",
+            "progress": 0,
+            "chunks_indexed": 0,
+            "error": None
+        }
         
-        if not chunks:
-            raise HTTPException(
-                status_code=400,
-                detail="No code chunks found in repository"
-            )
-        
-        # Generate embeddings
-        logger.info("Generating embeddings...")
-        embeddings = generate_embeddings(chunks)
-        logger.info(f"Generated {len(embeddings)} embeddings")
-        
-        # Store in ChromaDB
-        logger.info("Storing in ChromaDB...")
-        collection = store_in_chromadb(chunks, embeddings, repo_url, user_id)
-        logger.info("Successfully stored in ChromaDB")
+        logger.info(f"Started background indexing for {repo_url}")
         
         return IndexResponse(
-            status="indexed",
-            chunks_indexed=len(chunks),
+            status="indexing",
+            chunks_indexed=0,
             repo_id=repo_url
         )
         
