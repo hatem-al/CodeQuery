@@ -139,15 +139,35 @@ export default function RepoInput({ onRepoIndexed, currentRepo }) {
     setIsIndexing(true);
     setError(null);
     setIndexStatus(null);
-    setIndexingStage('Starting indexing...');
+    setIndexingStage('Connecting to backend...');
 
     try {
-      const response = await axios.post(`${API_BASE_URL}/index`, {
-        repo_url: trimmedUrl,
-        force_reindex: forceReindex
-      }, {
-        timeout: 30000 // 30 seconds for initial response
-      });
+      // Try to call the index endpoint with retry for cold starts
+      let response;
+      let attempts = 0;
+      const maxAttempts = 2;
+      
+      while (attempts < maxAttempts) {
+        try {
+          setIndexingStage(attempts > 0 ? 'Waking up server (cold start)...' : 'Starting indexing...');
+          response = await axios.post(`${API_BASE_URL}/index`, {
+            repo_url: trimmedUrl,
+            force_reindex: forceReindex
+          }, {
+            timeout: 60000 // 60 seconds for initial response
+          });
+          break; // Success, exit loop
+        } catch (err) {
+          attempts++;
+          if (err.code === 'ECONNABORTED' && attempts < maxAttempts) {
+            // Timeout, retry once
+            setIndexingStage('Server is waking up, retrying...');
+            await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
+            continue;
+          }
+          throw err; // Re-throw if not a timeout or max attempts reached
+        }
+      }
 
       if (response.data.status === 'indexed' || response.data.status === 'already_indexed') {
         // Already indexed (synchronous response)
@@ -166,7 +186,9 @@ export default function RepoInput({ onRepoIndexed, currentRepo }) {
     } catch (err) {
       let errorMessage = 'Failed to index repository. Please try again.';
       
-      if (err.code === 'ERR_NETWORK' || err.message === 'Network Error') {
+      if (err.code === 'ECONNABORTED') {
+        errorMessage = 'Server is taking too long to respond (cold start). Please try again in a moment.';
+      } else if (err.code === 'ERR_NETWORK' || err.message === 'Network Error') {
         errorMessage = 'Cannot connect to backend. Please check your connection and try again.';
       } else if (err.response?.status === 404) {
         errorMessage = 'Repository not found or is private. Please check the URL and try again.';
@@ -177,6 +199,8 @@ export default function RepoInput({ onRepoIndexed, currentRepo }) {
         errorMessage = err.response.data.detail;
       } else if (err.response?.data?.detail) {
         errorMessage = err.response.data.detail;
+      } else if (err.message && err.message.includes('timeout')) {
+        errorMessage = 'Request timed out. The server may be starting up (cold start). Please try again in a moment.';
       } else if (err.message) {
         errorMessage = err.message;
       }

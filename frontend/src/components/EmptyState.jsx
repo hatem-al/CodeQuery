@@ -94,7 +94,7 @@ export default function EmptyState({ onRepoIndexed }) {
         },
         {
           headers: { Authorization: `Bearer ${token}` },
-          timeout: 30000
+          timeout: 60000 // 60 seconds for cold start
         }
       );
 
