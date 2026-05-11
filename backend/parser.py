@@ -4,6 +4,7 @@ Code parser module for extracting and chunking code from GitHub repositories.
 
 import ast
 import os
+import re
 import tempfile
 import shutil
 from pathlib import Path
@@ -52,6 +53,72 @@ LANGUAGE_MAP = {
     '.cc': 'cpp',
     '.cxx': 'cpp',
 }
+
+
+def _get_layer(file_path: str) -> str:
+    """Classify a file into backend / frontend / config / other."""
+    file_lower = file_path.lower()
+    ext = Path(file_path).suffix.lower()
+    if ext in {'.jsx', '.tsx'} or 'frontend/' in file_lower or '/components/' in file_lower:
+        return 'frontend'
+    if ext == '.py':
+        return 'backend'
+    if ext in {'.json', '.yaml', '.yml', '.toml', '.ini'}:
+        return 'config'
+    if ext in {'.js', '.ts'}:
+        return 'frontend' if ('frontend/' in file_lower or '/src/' in file_lower) else 'backend'
+    return 'other'
+
+
+def _generate_file_summary(file_path: str, repo_path: str) -> Optional[Dict[str, str]]:
+    """Generate a synthetic summary chunk listing functions/classes with their docstrings."""
+    ext = Path(file_path).suffix.lower()
+    if ext not in {'.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.cpp', '.c', '.h'}:
+        return None
+
+    full_path = Path(repo_path) / file_path
+    summary_parts = [f"File: {file_path}"]
+
+    if ext == '.py':
+        try:
+            source = full_path.read_text(encoding='utf-8')
+            tree = ast.parse(source)
+        except Exception:
+            return None
+        for node in ast.iter_child_nodes(tree):
+            if isinstance(node, ast.ClassDef):
+                doc = (ast.get_docstring(node) or '').split('\n')[0]
+                summary_parts.append(f"class {node.name}: {doc}")
+                for child in ast.iter_child_nodes(node):
+                    if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        cdoc = (ast.get_docstring(child) or '').split('\n')[0]
+                        summary_parts.append(f"  def {child.name}: {cdoc}")
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                doc = (ast.get_docstring(node) or '').split('\n')[0]
+                summary_parts.append(f"def {node.name}: {doc}")
+    else:
+        try:
+            source = full_path.read_text(encoding='utf-8')
+        except Exception:
+            return None
+        for m in re.finditer(
+            r'(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s+(\w+)|class\s+(\w+)',
+            source
+        ):
+            name = m.group(1) or m.group(2)
+            kind = 'function' if m.group(1) else 'class'
+            summary_parts.append(f"{kind} {name}")
+
+    if len(summary_parts) <= 1:
+        return None
+
+    return {
+        'code': '\n'.join(summary_parts),
+        'file': file_path,
+        'type': 'file_summary',
+        'name': f"{Path(file_path).stem}_summary",
+        'lines': '1-1',
+    }
 
 
 def clone_repo(repo_url: str, temp_dir: Optional[str] = None) -> str:
@@ -147,18 +214,20 @@ def find_code_files(repo_path: str) -> List[str]:
         if any(skip_dir in file_path.parts for skip_dir in skip_dirs):
             continue
         
-        # Check if file has a supported code extension
-        if file_path.suffix in CODE_EXTENSIONS:
-            # Get relative path from repo root
-            rel_path = file_path.relative_to(repo_path_obj)
-            rel_path_str = str(rel_path)
-            
-            # Skip if matches skip patterns
-            full_path = str(file_path)
-            if should_skip_file(full_path, skip_file_patterns) or should_skip_file(rel_path_str, skip_file_patterns):
-                continue
-            
-            code_files.append(rel_path_str)
+        # Include if it's a supported code extension OR a priority file (e.g. README.md)
+        is_code_file = file_path.suffix in CODE_EXTENSIONS
+        is_priority = file_path.name in PRIORITY_FILES
+        if not is_code_file and not is_priority:
+            continue
+
+        rel_path = file_path.relative_to(repo_path_obj)
+        rel_path_str = str(rel_path)
+
+        full_path = str(file_path)
+        if should_skip_file(full_path, skip_file_patterns) or should_skip_file(rel_path_str, skip_file_patterns):
+            continue
+
+        code_files.append(rel_path_str)
     
     return sorted(code_files)
 
@@ -237,23 +306,47 @@ def chunk_python_file(file_path: str, repo_path: str) -> List[Dict[str, str]]:
             'lines': f"1-{len(lines)}"
         }]
     
+    # Extract module-level constants/assignments (not inside any function or class)
+    top_level_assign_lines = []
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            start = node.lineno
+            end = getattr(node, 'end_lineno', start)
+            top_level_assign_lines.extend(range(start, end + 1))
+
+    if top_level_assign_lines:
+        min_line = min(top_level_assign_lines)
+        max_line = max(top_level_assign_lines)
+        const_code = '\n'.join(lines[min_line - 1:max_line])
+        if const_code.strip():
+            chunks.append({
+                'code': const_code,
+                'file': file_path,
+                'type': 'constants',
+                'name': 'module_constants',
+                'lines': f"{min_line}-{max_line}"
+            })
+
     # Track line numbers for each node
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             # Get the actual source lines for this node
+            # Start from the first decorator line so route paths (@app.get, @login_required, etc.) are included
             start_line = node.lineno
+            if hasattr(node, 'decorator_list') and node.decorator_list:
+                start_line = node.decorator_list[0].lineno
             end_line = node.end_lineno if hasattr(node, 'end_lineno') else start_line
-            
+
             # Extract the code chunk
             chunk_lines = lines[start_line - 1:end_line]
             chunk_code = '\n'.join(chunk_lines)
-            
+
             # Determine type
             if isinstance(node, ast.ClassDef):
                 node_type = 'class'
             else:
                 node_type = 'function'
-            
+
             chunks.append({
                 'code': chunk_code,
                 'file': file_path,
@@ -261,7 +354,7 @@ def chunk_python_file(file_path: str, repo_path: str) -> List[Dict[str, str]]:
                 'name': node.name,
                 'lines': f"{start_line}-{end_line}"
             })
-    
+
     # If no functions or classes found, return the entire file as a module chunk
     if not chunks:
         chunks.append({
@@ -449,6 +542,55 @@ def chunk_by_patterns(source_code: str, file_path: str, language: str, lines: Li
     return chunks
 
 
+def _parse_single_file(file_path: str, repo_path: str) -> List[Dict[str, str]]:
+    """Parse a single file into code chunks. Used by parallel parser."""
+    file_ext = Path(file_path).suffix
+    layer = _get_layer(file_path)
+    chunks: List[Dict[str, str]] = []
+    try:
+        if file_ext == '.py':
+            chunks = chunk_python_file(file_path, repo_path)
+        elif file_ext in LANGUAGE_MAP:
+            language = LANGUAGE_MAP[file_ext]
+            chunks = chunk_with_tree_sitter(file_path, repo_path, language)
+            if not chunks:
+                full_path = Path(repo_path) / file_path
+                source_code = full_path.read_text(encoding='utf-8')
+                file_lines = source_code.split('\n')
+                chunks = [{
+                    'code': source_code,
+                    'file': file_path,
+                    'type': 'file',
+                    'name': Path(file_path).stem,
+                    'lines': f"1-{len(file_lines)}"
+                }]
+        else:
+            full_path = Path(repo_path) / file_path
+            source_code = full_path.read_text(encoding='utf-8')
+            file_lines = source_code.split('\n')
+            chunk_type = 'documentation' if file_ext == '.md' else 'file'
+            chunks = [{
+                'code': source_code,
+                'file': file_path,
+                'type': chunk_type,
+                'name': Path(file_path).stem,
+                'lines': f"1-{len(file_lines)}"
+            }]
+
+        for chunk in chunks:
+            chunk['layer'] = layer
+
+        summary = _generate_file_summary(file_path, repo_path)
+        if summary:
+            summary['layer'] = layer
+            chunks.append(summary)
+
+        return chunks
+    except Exception as e:
+        print(f"Error processing {file_path}: {e}")
+        return []
+
+
 def parse_repo(repo_url: str, temp_dir: Optional[str] = None, cleanup: bool = True) -> Tuple[List[Dict[str, str]], Optional[str]]:
     """
     Clone a repository and parse all code files into chunks.
@@ -475,74 +617,24 @@ def parse_repo(repo_url: str, temp_dir: Optional[str] = None, cleanup: bool = Tr
         # Find all code files
         code_files = find_code_files(repo_path)
         
-        # Parse and chunk files
-        all_chunks = []
-        
         print(f"Found {len(code_files)} code files to parse...")
-        
-        for file_path in code_files:
-            # Check if we've exceeded chunk limit
+
+        # Parse files in parallel — I/O and CPU-bound parsing benefit from threads here
+        from concurrent.futures import ThreadPoolExecutor
+        all_chunks = []
+        workers = min(8, max(1, len(code_files)))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            results = list(executor.map(
+                lambda fp: _parse_single_file(fp, repo_path),
+                code_files
+            ))
+
+        for chunks in results:
+            all_chunks.extend(chunks)
             if len(all_chunks) >= MAX_CHUNKS:
-                print(f"⚠ Warning: Reached maximum chunk limit ({MAX_CHUNKS} chunks). Stopping parsing.")
+                print(f"⚠ Warning: Reached maximum chunk limit ({MAX_CHUNKS} chunks). Truncating.")
+                all_chunks = all_chunks[:MAX_CHUNKS]
                 break
-            
-            file_ext = Path(file_path).suffix
-            
-            try:
-                if file_ext == '.py':
-                    # Parse Python files using AST
-                    chunks = chunk_python_file(file_path, repo_path)
-                    all_chunks.extend(chunks[:MAX_CHUNKS - len(all_chunks)])  # Don't exceed limit
-                elif file_ext in LANGUAGE_MAP:
-                    # Parse other languages using tree-sitter or pattern matching
-                    language = LANGUAGE_MAP[file_ext]
-                    chunks = chunk_with_tree_sitter(file_path, repo_path, language)
-                    if chunks:
-                        all_chunks.extend(chunks[:MAX_CHUNKS - len(all_chunks)])
-                    else:
-                        # Fallback to entire file if parsing fails
-                        full_path = Path(repo_path) / file_path
-                        try:
-                            with open(full_path, 'r', encoding='utf-8') as f:
-                                source_code = f.read()
-                                lines = source_code.split('\n')
-                            
-                            all_chunks.append({
-                                'code': source_code,
-                                'file': file_path,
-                                'type': 'file',
-                                'name': Path(file_path).stem,
-                                'lines': f"1-{len(lines)}"
-                            })
-                        except Exception as e:
-                            print(f"Error processing {file_path}: {e}")
-                            continue
-                else:
-                    # Unknown file type - add as single chunk
-                    full_path = Path(repo_path) / file_path
-                    try:
-                        with open(full_path, 'r', encoding='utf-8') as f:
-                            source_code = f.read()
-                            lines = source_code.split('\n')
-                        
-                        all_chunks.append({
-                            'code': source_code,
-                            'file': file_path,
-                            'type': 'file',
-                            'name': Path(file_path).stem,
-                            'lines': f"1-{len(lines)}"
-                        })
-                    except Exception as e:
-                        print(f"Error processing {file_path}: {e}")
-                        continue
-            except Exception as e:
-                print(f"Error processing {file_path}: {e}")
-                continue
-        
-        # Final check for chunk limit
-        if len(all_chunks) > MAX_CHUNKS:
-            print(f"⚠ Truncating to {MAX_CHUNKS} chunks (had {len(all_chunks)})")
-            all_chunks = all_chunks[:MAX_CHUNKS]
         
         print(f"✓ Parsed {len(all_chunks)} code chunks from {len(code_files)} files")
         

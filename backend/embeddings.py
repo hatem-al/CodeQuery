@@ -3,12 +3,13 @@ Embeddings generation and vector storage using OpenAI and ChromaDB.
 """
 
 import os
+import re
 import uuid
 import json
 import hashlib
 import warnings
 from pathlib import Path
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 from dotenv import load_dotenv
 from openai import OpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -78,6 +79,20 @@ COLLECTION_NAME = "code_docs"
 
 # Reuse a single client instance to support in-memory ChromaDB clients.
 _CHROMA_CLIENT = None
+
+# Cache query embeddings so repeated questions skip the OpenAI round-trip (~100ms saved each)
+_QUERY_EMBEDDING_CACHE: Dict[str, List[float]] = {}
+_QUERY_CACHE_MAX_SIZE = 500
+
+# BM25 index cache: collection_name → (doc_count, bm25, ids, docs)
+_BM25_CACHE: Dict[str, Tuple] = {}
+
+try:
+    from rank_bm25 import BM25Okapi
+    BM25_AVAILABLE = True
+except ImportError:
+    BM25_AVAILABLE = False
+    print("Warning: rank_bm25 not installed. Hybrid search will use vector-only.")
 
 
 def get_language_from_file(file_path: str) -> str:
@@ -406,7 +421,8 @@ def store_in_chromadb(chunks: List[Dict[str, str]], embeddings: List[List[float]
             'type': chunk['type'],
             'name': chunk['name'],
             'lines': chunk['lines'],
-            'language': language
+            'language': language,
+            'layer': chunk.get('layer', 'other'),
         })
     
     # Upsert to ChromaDB (handles duplicates)
@@ -471,7 +487,7 @@ def get_collection_for_repo(repo_url: str, user_id: str) -> Any:
         raise ValueError(f"Error accessing collection for repository {repo_url}: {e}")
 
 
-def search_code(query: str, collection: Any, top_k: int = 5, similarity_threshold: float = 0.0, language_filter: Optional[str] = None, file_type_filter: Optional[str] = None) -> List[Dict]:
+def search_code(query: str, collection: Any, top_k: int = 5, similarity_threshold: float = 0.0, language_filter: Optional[str] = None, file_type_filter: Optional[str] = None, where_filter: Optional[Dict] = None) -> List[Dict]:
     """
     Search for relevant code chunks using semantic search with cosine similarity.
     
@@ -489,23 +505,45 @@ def search_code(query: str, collection: Any, top_k: int = 5, similarity_threshol
     """
     print(f"Searching for: '{query}'...")
     
-    # Generate embedding for the query
+    # Generate embedding for the query (use cache to avoid redundant API calls)
     try:
-        query_embedding = _get_embedding_batch([query])[0]
+        cache_key = hashlib.md5(query.encode()).hexdigest()
+        if cache_key in _QUERY_EMBEDDING_CACHE:
+            query_embedding = _QUERY_EMBEDDING_CACHE[cache_key]
+        else:
+            query_embedding = _get_embedding_batch([query])[0]
+            if len(_QUERY_EMBEDDING_CACHE) >= _QUERY_CACHE_MAX_SIZE:
+                _QUERY_EMBEDDING_CACHE.pop(next(iter(_QUERY_EMBEDDING_CACHE)))
+            _QUERY_EMBEDDING_CACHE[cache_key] = query_embedding
     except Exception as e:
         print(f"Error generating query embedding: {e}")
         raise
     
     # Search ChromaDB with cosine similarity
     try:
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=top_k,
-            include=['documents', 'metadatas', 'distances']
-        )
+        query_kwargs: Dict[str, Any] = {
+            'query_embeddings': [query_embedding],
+            'n_results': top_k,
+            'include': ['documents', 'metadatas', 'distances']
+        }
+        if where_filter:
+            query_kwargs['where'] = where_filter
+        results = collection.query(**query_kwargs)
     except Exception as e:
-        print(f"Error searching ChromaDB: {e}")
-        raise
+        if where_filter:
+            # where filter may fail if no docs match — retry without it
+            try:
+                results = collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=top_k,
+                    include=['documents', 'metadatas', 'distances']
+                )
+            except Exception as e2:
+                print(f"Error searching ChromaDB: {e2}")
+                raise e2
+        else:
+            print(f"Error searching ChromaDB: {e}")
+            raise
     
     # Format results with filtering
     retrieved_chunks = []
@@ -556,6 +594,134 @@ def search_code(query: str, collection: Any, top_k: int = 5, similarity_threshol
         print("No results found")
     
     return retrieved_chunks
+
+
+def _tokenize_for_bm25(text: str) -> List[str]:
+    """Tokenize text for BM25: splits on whitespace/punctuation and camelCase."""
+    tokens = re.findall(r'\w+', text.lower())
+    expanded: List[str] = []
+    for token in tokens:
+        # split camelCase: fooBar → foo bar
+        parts = re.sub(r'([a-z])([A-Z])', r'\1 \2', token).lower().split()
+        expanded.extend(parts)
+    return expanded
+
+
+def _get_bm25_index(collection: Any) -> Tuple[Any, List[str], List[str]]:
+    """Return a cached BM25 index for the collection, rebuilding when docs change."""
+    if not BM25_AVAILABLE:
+        raise RuntimeError("rank_bm25 not installed")
+
+    name = collection.name
+    count = collection.count()
+    cached = _BM25_CACHE.get(name)
+    if cached and cached[0] == count:
+        _, bm25, ids, docs = cached
+        return bm25, ids, docs
+
+    result = collection.get(include=['documents', 'ids'])
+    ids: List[str] = result['ids']
+    docs: List[str] = result['documents']
+    tokenized = [_tokenize_for_bm25(d) for d in docs]
+    bm25 = BM25Okapi(tokenized)
+    _BM25_CACHE[name] = (count, bm25, ids, docs)
+    return bm25, ids, docs
+
+
+def _rrf_fuse(ranked_lists: List[List[str]], k: int = 60) -> List[str]:
+    """Reciprocal Rank Fusion over multiple ranked ID lists."""
+    scores: Dict[str, float] = {}
+    for ranked in ranked_lists:
+        for rank, doc_id in enumerate(ranked):
+            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank + 1)
+    return sorted(scores, key=lambda x: scores[x], reverse=True)
+
+
+def hybrid_search_code(
+    query: str,
+    collection: Any,
+    top_k: int = 5,
+    similarity_threshold: float = 0.0,
+    language_filter: Optional[str] = None,
+    file_type_filter: Optional[str] = None,
+    where_filter: Optional[Dict] = None,
+) -> List[Dict]:
+    """
+    Hybrid search: vector (cosine) + BM25 keyword, fused with Reciprocal Rank Fusion.
+    Falls back to vector-only if rank_bm25 is unavailable.
+    """
+    fetch_k = top_k * 3
+
+    # --- Vector search ---
+    vector_results = search_code(
+        query, collection,
+        top_k=fetch_k,
+        similarity_threshold=0.0,
+        language_filter=language_filter,
+        file_type_filter=file_type_filter,
+        where_filter=where_filter,
+    )
+    vector_ids = [r['id'] for r in vector_results]
+
+    if not BM25_AVAILABLE:
+        # Apply threshold and return
+        return [r for r in vector_results if r.get('similarity', 0) >= similarity_threshold][:top_k]
+
+    # --- BM25 search ---
+    try:
+        bm25, all_ids, all_docs = _get_bm25_index(collection)
+        query_tokens = _tokenize_for_bm25(query)
+        scores = bm25.get_scores(query_tokens)
+        ranked = sorted(range(len(all_ids)), key=lambda i: scores[i], reverse=True)
+        bm25_ids = [all_ids[i] for i in ranked[:fetch_k] if scores[i] > 0]
+    except Exception as e:
+        print(f"BM25 search failed, using vector-only: {e}")
+        return [r for r in vector_results if r.get('similarity', 0) >= similarity_threshold][:top_k]
+
+    # --- RRF fusion ---
+    fused_ids = _rrf_fuse([vector_ids, bm25_ids])
+
+    # Build lookup from already-fetched vector results
+    result_by_id: Dict[str, Dict] = {r['id']: r for r in vector_results}
+
+    # Fetch docs that appear only in BM25 results
+    bm25_only = [doc_id for doc_id in fused_ids if doc_id not in result_by_id]
+    if bm25_only:
+        try:
+            fetched = collection.get(ids=bm25_only, include=['documents', 'metadatas'])
+            for i, doc_id in enumerate(fetched['ids']):
+                meta = fetched['metadatas'][i]
+                # Apply filters post-hoc
+                if where_filter:
+                    if not all(meta.get(k) == v for k, v in where_filter.items()):
+                        continue
+                if language_filter and meta.get('language', '').lower() != language_filter.lower():
+                    continue
+                if file_type_filter and meta.get('type', '').lower() != file_type_filter.lower():
+                    continue
+                result_by_id[doc_id] = {
+                    'code': fetched['documents'][i],
+                    'metadata': meta,
+                    'similarity': 0.05,  # BM25-only baseline
+                    'id': doc_id,
+                }
+        except Exception as e:
+            print(f"Failed to fetch BM25-only results: {e}")
+
+    # Order by RRF rank, apply threshold
+    ordered: List[Dict] = []
+    for doc_id in fused_ids:
+        if doc_id not in result_by_id:
+            continue
+        r = result_by_id[doc_id]
+        if r.get('similarity', 0) < similarity_threshold:
+            continue
+        ordered.append(r)
+        if len(ordered) >= top_k:
+            break
+
+    print(f"✓ Hybrid search: {len(ordered)} results (vector={len(vector_ids)}, bm25={len(bm25_ids)})")
+    return ordered
 
 
 if __name__ == '__main__':

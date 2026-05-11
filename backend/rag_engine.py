@@ -16,6 +16,7 @@ class QueryContext:
     related_concepts: List[str] = field(default_factory=list)  # Related concepts to search
     depth: int = 1  # How many hops to retrieve (1=direct, 2=one level, 3=deep)
     original_query: str = ""
+    hyde_document: str = ""  # Hypothetical code snippet for HyDE retrieval
 
 
 class AdvancedRAG:
@@ -158,71 +159,105 @@ class AdvancedRAG:
         """
         all_results = []
         seen_ids = set()
-        
-        # First hop: search for main concept
-        main_results = self.search_func(
-            context.main_concept,
+
+        query_lower = context.original_query.lower()
+        is_ui = any(kw in query_lower for kw in self._UI_QUERY_KEYWORDS)
+        backend_filter = {"language": "python"} if not is_ui else None
+
+        # Use HyDE document for embedding when available (better code-space proximity)
+        embed_query = context.hyde_document if context.hyde_document else context.original_query
+
+        def _add_results(results):
+            for result in results:
+                result_id = f"{result['metadata']['file']}:{result['metadata']['lines']}"
+                if result_id not in seen_ids:
+                    seen_ids.add(result_id)
+                    all_results.append(result)
+
+        # First hop — Python-only for backend queries (forces backend chunks into result set)
+        if backend_filter:
+            _add_results(self.search_func(
+                embed_query,
+                self.collection,
+                top_k=top_k,
+                similarity_threshold=0.1,
+                where_filter=backend_filter
+            ))
+
+        # Broad first hop — catches non-Python files and fills any gaps
+        _add_results(self.search_func(
+            embed_query,
             self.collection,
             top_k=top_k,
             similarity_threshold=0.2
-        )
-        
-        for result in main_results:
-            result_id = f"{result['metadata']['file']}:{result['metadata']['lines']}"
-            if result_id not in seen_ids:
-                seen_ids.add(result_id)
-                all_results.append(result)
-        
-        # Extract related concepts from first hop results
-        if context.depth > 1 and main_results:
-            related_concepts = self._extract_related_concepts(main_results)
-            context.related_concepts = related_concepts[:5]  # Limit to 5 related concepts
-        
-        # Second hop: search for related concepts
+        ))
+
+        # Extract related concepts from results so far
+        if context.depth > 1 and all_results:
+            related_concepts = self._extract_related_concepts(all_results[:top_k])
+            context.related_concepts = related_concepts[:5]
+
+        # Second hop: related concepts
         if context.depth >= 2 and context.related_concepts:
             for concept in context.related_concepts:
-                concept_results = self.search_func(
+                _add_results(self.search_func(
                     concept,
                     self.collection,
-                    top_k=top_k // 2,  # Fewer results per related concept
+                    top_k=top_k // 2,
                     similarity_threshold=0.2
-                )
-                
-                for result in concept_results:
-                    result_id = f"{result['metadata']['file']}:{result['metadata']['lines']}"
-                    if result_id not in seen_ids:
-                        seen_ids.add(result_id)
-                        all_results.append(result)
-        
-        # Third hop: search for usage/configuration patterns
+                ))
+
+        # Third hop: usage/configuration patterns
         if context.depth >= 3:
-            # Search for patterns like "how X is used", "X configuration"
             usage_queries = [
-                f"{context.main_concept} usage",
                 f"{context.main_concept} configuration",
-                f"{context.main_concept} setup",
                 f"how {context.main_concept} works"
             ]
-            
-            for usage_query in usage_queries[:2]:  # Limit to 2 usage queries
-                usage_results = self.search_func(
+            for usage_query in usage_queries:
+                _add_results(self.search_func(
                     usage_query,
                     self.collection,
                     top_k=top_k // 4,
                     similarity_threshold=0.2
-                )
-                
-                for result in usage_results:
-                    result_id = f"{result['metadata']['file']}:{result['metadata']['lines']}"
-                    if result_id not in seen_ids:
-                        seen_ids.add(result_id)
-                        all_results.append(result)
-        
-        # Sort by similarity (highest first)
-        all_results.sort(key=lambda x: x.get('similarity', 0.0), reverse=True)
-        
+                ))
+
+        # Sort using reranking scores so backend files stay on top for non-UI queries
+        all_results = self.rerank_by_source(all_results, context.original_query)
+
         # Limit total results
-        return all_results[:top_k * 2]  # Allow more results for multi-hop
+        return all_results[:top_k * 2]
+
+    # UI-related keywords that indicate the query is about frontend/React code
+    _UI_QUERY_KEYWORDS = {
+        'frontend', 'ui', 'component', 'react', 'jsx', 'tsx', 'css', 'style',
+        'render', 'html', 'button', 'form', 'page', 'screen', 'view', 'display',
+        'modal', 'sidebar', 'navbar', 'dropdown', 'input', 'checkbox', 'tailwind',
+        'dark mode', 'theme', 'layout', 'animation'
+    }
+
+    def rerank_by_source(self, results: List[Dict], query: str) -> List[Dict]:
+        """
+        Rerank results to prioritize backend/Python files over frontend files
+        unless the query is explicitly about UI/frontend.
+        """
+        query_lower = query.lower()
+        is_ui_query = any(kw in query_lower for kw in self._UI_QUERY_KEYWORDS)
+
+        if is_ui_query:
+            return results  # Don't rerank UI queries
+
+        def _score(result: Dict) -> float:
+            base = result.get('similarity', 0.0)
+            file_path = result.get('metadata', {}).get('file', '').lower()
+            # Penalise frontend files heavily for non-UI queries
+            if 'frontend/' in file_path or file_path.endswith(('.jsx', '.tsx')):
+                return base * 0.25
+            # Boost for Python backend files
+            if file_path.endswith('.py'):
+                return base * 1.3
+            return base
+
+        return sorted(results, key=_score, reverse=True)
     
     def _extract_related_concepts(self, chunks: List[Dict]) -> List[str]:
         """

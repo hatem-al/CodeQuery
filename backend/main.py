@@ -36,6 +36,7 @@ from embeddings import (
     generate_embeddings,
     store_in_chromadb,
     search_code,
+    hybrid_search_code,
     is_repo_indexed,
     get_chromadb_client,
     get_collection_for_repo,
@@ -115,6 +116,34 @@ async def call_openai_chat_with_retry(messages, model="gpt-4o-mini", temperature
     except Exception as e:
         logger.warning(f"OpenAI API call failed (will retry): {e}")
         raise
+
+async def generate_hyde_document(query: str) -> str:
+    """
+    HyDE: generate a hypothetical code snippet that would answer the query,
+    then use its embedding for retrieval (much closer to actual code vectors).
+    Falls back to the original query on any error.
+    """
+    try:
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Generate a short hypothetical code snippet (10-30 lines) "
+                        "that would answer the following question. Output only code, no prose."
+                    ),
+                },
+                {"role": "user", "content": query},
+            ],
+            temperature=0.0,
+            max_tokens=300,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.warning(f"HyDE generation failed, using original query: {e}")
+        return query
+
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -769,16 +798,20 @@ async def chat_with_codebase_stream(
                 yield f"data: {json.dumps({'error': str(e)})}\n\n"
                 return
             
-            # Initialize Advanced RAG engine
-            rag_engine = AdvancedRAG(search_code, collection)
-            
+            # Initialize Advanced RAG engine (hybrid search = BM25 + vector + RRF)
+            rag_engine = AdvancedRAG(hybrid_search_code, collection)
+
             # Analyze query to determine intent and extract concepts
             query_context = rag_engine.analyze_query(query)
             logger.info(f"Streaming - Query intent: {query_context.intent}, main concept: {query_context.main_concept}, depth: {query_context.depth}")
-            
-            # Perform multi-hop search based on query context
+
+            # HyDE: generate a hypothetical code snippet for better embedding alignment
+            query_context.hyde_document = await generate_hyde_document(query)
+            logger.debug(f"HyDE document: {query_context.hyde_document[:80]}...")
+
+            # Perform multi-hop search based on query context (reranking done inside)
             search_results = rag_engine.multi_hop_search(query_context, top_k=8)
-            
+
             # Check for low confidence results
             low_confidence_results = []
             if search_results:
@@ -786,11 +819,11 @@ async def chat_with_codebase_stream(
                     similarity = result.get('similarity', 0.0)
                     if similarity < 0.3:
                         low_confidence_results.append(result)
-            
+
             if not search_results:
                 yield f"data: {json.dumps({'answer': 'I could not find any relevant code in the repository for your question. Try rephrasing your query or asking about a different topic.', 'sources': []})}\n\n"
                 return
-            
+
             # Organize chunks by file type and content type
             organized_chunks = rag_engine.organize_chunks(search_results)
             
@@ -865,6 +898,7 @@ CRITICAL INSTRUCTIONS:
 9. EXPLAIN PURPOSE - For each code block, explain what problem it solves and how it solves it.
 10. TYPO ACKNOWLEDGMENT - If the query contained typos that were corrected, acknowledge the correction at the start of your response.
 11. CLARIFICATION - If search results are unclear or have low confidence, ask the user for clarification or suggest alternative queries.
+12. NO FABRICATION - If the provided code snippets do not contain enough information to answer the question, say "I don't see this implemented in the indexed code." NEVER invent code, APIs, or patterns that are not present in the snippets above.
 
 CRITICAL FORMATTING RULES (MUST FOLLOW):
 - Use inline backticks for code: `User`, `id`, `name`, `role`, `email` - ALL ON THE SAME LINE
@@ -901,14 +935,23 @@ Answer by analyzing the implementation logic and explaining how the code works."
             # Stream response from GPT-4o-mini with retry logic
             logger.info("Streaming from GPT-4o-mini...")
             try:
+                # Build messages with conversation history (mirrors non-streaming /chat endpoint)
+                chat_messages = [{"role": "system", "content": system_prompt}]
+                stream_history = chat_request.chat_history or []
+                if stream_history:
+                    recent = stream_history[-6:] if len(stream_history) > 6 else stream_history
+                    for msg in recent:
+                        chat_messages.append({
+                            "role": msg.get("role", "user"),
+                            "content": msg.get("content", "")
+                        })
+                chat_messages.append({"role": "user", "content": user_prompt})
+
                 stream = await call_openai_chat_with_retry(
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
+                    messages=chat_messages,
                     model="gpt-4o-mini",
-                temperature=0.2,  # Very low temperature for precise, literal reading
-                max_tokens=3000,  # More tokens for detailed explanations
+                    temperature=0.2,
+                    max_tokens=3000,
                     stream=True
                 )
                 
@@ -995,16 +1038,20 @@ async def chat_with_codebase(
                 detail=error_msg
             )
         
-        # Initialize Advanced RAG engine
-        rag_engine = AdvancedRAG(search_code, collection)
-        
+        # Initialize Advanced RAG engine (hybrid search = BM25 + vector + RRF)
+        rag_engine = AdvancedRAG(hybrid_search_code, collection)
+
         # Analyze query to determine intent and extract concepts
         query_context = rag_engine.analyze_query(query)
         logger.info(f"Query intent: {query_context.intent}, main concept: {query_context.main_concept}, depth: {query_context.depth}")
-        
-        # Perform multi-hop search based on query context
+
+        # HyDE: generate a hypothetical code snippet for better embedding alignment
+        query_context.hyde_document = await generate_hyde_document(query)
+        logger.debug(f"HyDE document: {query_context.hyde_document[:80]}...")
+
+        # Perform multi-hop search based on query context (reranking done inside)
         search_results = rag_engine.multi_hop_search(query_context, top_k=8)
-        
+
         # Check for low confidence results
         low_confidence_results = []
         if search_results:
@@ -1012,7 +1059,7 @@ async def chat_with_codebase(
                 similarity = result.get('similarity', 0.0)
                 if similarity < 0.3:
                     low_confidence_results.append(result)
-        
+
         if not search_results:
             logger.warning(f"No search results found for query: '{query}' in repo: {repo_id}")
             # Try again with no threshold to see if any results exist
@@ -1104,6 +1151,7 @@ CRITICAL INSTRUCTIONS:
 9. EXPLAIN PURPOSE - For each code block, explain what problem it solves and how it solves it.
 10. TYPO ACKNOWLEDGMENT - If the query contained typos that were corrected, acknowledge the correction at the start of your response.
 11. CLARIFICATION - If search results are unclear or have low confidence, ask the user for clarification or suggest alternative queries.
+12. NO FABRICATION - If the provided code snippets do not contain enough information to answer the question, say "I don't see this implemented in the indexed code." NEVER invent code, APIs, or patterns that are not present in the snippets above.
 12. CONVERSATION CONTEXT - Remember previous questions and answers in the conversation. Reference them when relevant (e.g., "As I mentioned earlier..." or "Building on the previous answer...").
 
 FORMATTING RULES:

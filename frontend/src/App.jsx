@@ -6,7 +6,7 @@ import EmptyState from './components/EmptyState';
 import RepoInput from './components/RepoInput';
 import ChatInterface from './components/ChatInterface';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
 
 function App() {
   const [currentRepo, setCurrentRepo] = useState(null);
@@ -38,11 +38,13 @@ function App() {
       });
       setUser(response.data);
     } catch (err) {
-      // Token invalid, clear auth
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
-      setToken(null);
-      setUser(null);
+      // Only clear auth on explicit 401 — network errors or server down should not log the user out
+      if (err.response?.status === 401) {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        setToken(null);
+        setUser(null);
+      }
     }
   };
 

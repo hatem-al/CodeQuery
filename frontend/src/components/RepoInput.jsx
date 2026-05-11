@@ -4,19 +4,7 @@ import LoadingSpinner from './LoadingSpinner';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
 
-// Helper to get auth token
-const getAuthToken = () => {
-  return localStorage.getItem('token');
-};
 
-// Configure axios to include token in requests
-axios.interceptors.request.use((config) => {
-  const token = getAuthToken();
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
-});
 
 /**
  * RepoInput component - Input GitHub URL and trigger indexing

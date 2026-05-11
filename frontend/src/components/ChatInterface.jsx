@@ -11,13 +11,13 @@ const getAuthToken = () => {
   return localStorage.getItem('token');
 };
 
-// Configure axios to include token in requests (if not already configured)
-if (!axios.defaults.headers.common['Authorization']) {
+// Register the axios auth interceptor once at module load time
+let _interceptorRegistered = false;
+if (!_interceptorRegistered) {
+  _interceptorRegistered = true;
   axios.interceptors.request.use((config) => {
     const token = getAuthToken();
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
+    if (token) config.headers.Authorization = `Bearer ${token}`;
     return config;
   });
 }
@@ -72,7 +72,11 @@ export default function ChatInterface({ repoId }) {
       const userId = getUserId();
       const storageKey = `chat_history_${userId}_${repoId}`;
       try {
-        localStorage.setItem(storageKey, JSON.stringify(messages));
+        // Exclude in-progress streaming messages; cap at 50 to avoid storage overflow
+        const toSave = messages
+          .filter(m => !m.streaming)
+          .slice(-50);
+        localStorage.setItem(storageKey, JSON.stringify(toSave));
       } catch (err) {
         console.error('Error saving chat history:', err);
       }
@@ -99,71 +103,136 @@ export default function ChatInterface({ repoId }) {
     }
   }, [repoId]);
 
+  const getErrorMessage = (err) => {
+    if (!err) return 'Failed to get response. Please try again.';
+    const msg = err.message || '';
+    if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('Network Error'))
+      return 'Cannot connect to backend. Please make sure the server is running.';
+    if (msg.includes('404') || msg.includes('not found'))
+      return 'Repository not found. Please re-index the repository.';
+    if (msg.includes('429') || msg.includes('rate limit'))
+      return 'Rate limit exceeded. Please wait a moment and try again.';
+    return msg || 'Failed to get response. Please try again.';
+  };
+
   const handleSend = async (e) => {
     e.preventDefault();
-    
+
     if (!input.trim() || isLoading) return;
-    
-    if (!repoId) {
-      setError('Please index a repository first');
-      return;
-    }
+    if (!repoId) { setError('Please index a repository first'); return; }
 
     const userMessage = input.trim();
     setInput('');
     setError(null);
 
-    // Add user message immediately
-    const newUserMessage = {
-      role: 'user',
-      content: userMessage,
-      timestamp: new Date()
-    };
-    setMessages(prev => [...prev, newUserMessage]);
+    // Build history from settled messages only (no error/streaming messages)
+    const chatHistory = messages
+      .filter(m => (m.role === 'user' || m.role === 'assistant') && !m.streaming)
+      .slice(-10)
+      .map(m => ({ role: m.role, content: m.content }));
 
+    setMessages(prev => [...prev, { role: 'user', content: userMessage, timestamp: new Date() }]);
     setIsLoading(true);
 
     try {
-      // Call chat endpoint with timeout
-      const response = await axios.post(`${API_BASE_URL}/chat`, {
-        query: userMessage,
-        repo_id: repoId
-      }, {
-        timeout: 60000 // 60 second timeout
+      const token = getAuthToken();
+      const response = await fetch(`${API_BASE_URL}/chat/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ query: userMessage, repo_id: repoId, chat_history: chatHistory })
       });
 
-      const assistantMessage = {
-        role: 'assistant',
-        content: response.data.answer || 'No response received.',
-        sources: response.data.sources || [],
-        timestamp: new Date()
-      };
-
-      setMessages(prev => [...prev, assistantMessage]);
-    } catch (err) {
-      let errorContent = 'Failed to get response. Please try again.';
-      
-      if (err.code === 'ERR_NETWORK' || err.message === 'Network Error') {
-        errorContent = 'Cannot connect to backend. Please make sure the server is running.';
-      } else if (err.response?.status === 404) {
-        errorContent = 'Repository not found. Please re-index the repository.';
-      } else if (err.response?.status === 429) {
-        errorContent = 'Rate limit exceeded. Please wait a moment and try again.';
-      } else if (err.response?.data?.detail) {
-        errorContent = err.response.data.detail;
-      } else if (err.message) {
-        errorContent = err.message;
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || `Server error ${response.status}`);
       }
-      
-      const errorMessage = {
-        role: 'error',
-        content: errorContent,
-        timestamp: new Date()
-      };
-      setMessages(prev => [...prev, errorMessage]);
-      setError(errorContent);
-    } finally {
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let assistantAdded = false;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        // SSE events are separated by double newlines
+        const events = buffer.split('\n\n');
+        buffer = events.pop() ?? '';
+
+        for (const event of events) {
+          if (!event.startsWith('data: ')) continue;
+          let data;
+          try { data = JSON.parse(event.slice(6).trim()); } catch { continue; }
+
+          if (data.error) throw new Error(data.error);
+
+          // Single-event answer (e.g. "no results found" case)
+          if (data.answer !== undefined) {
+            setIsLoading(false);
+            assistantAdded = true;
+            setMessages(prev => [...prev, {
+              role: 'assistant',
+              content: data.answer,
+              sources: data.sources || [],
+              timestamp: new Date(),
+              streaming: false
+            }]);
+          }
+
+          // Sources arrive first — add the assistant message placeholder
+          if (data.sources && !assistantAdded) {
+            assistantAdded = true;
+            setIsLoading(false);
+            setMessages(prev => [...prev, {
+              role: 'assistant',
+              content: '',
+              sources: data.sources,
+              timestamp: new Date(),
+              streaming: true
+            }]);
+          }
+
+          // Append streamed token to last assistant message
+          if (data.content) {
+            setMessages(prev => {
+              const updated = [...prev];
+              const last = updated[updated.length - 1];
+              if (last?.role === 'assistant') {
+                updated[updated.length - 1] = { ...last, content: last.content + data.content };
+              }
+              return updated;
+            });
+          }
+
+          // Mark stream complete
+          if (data.done) {
+            setMessages(prev => {
+              const updated = [...prev];
+              const last = updated[updated.length - 1];
+              if (last?.role === 'assistant') {
+                updated[updated.length - 1] = { ...last, streaming: false };
+              }
+              return updated;
+            });
+          }
+        }
+      }
+
       setIsLoading(false);
+    } catch (err) {
+      setIsLoading(false);
+      const errorContent = getErrorMessage(err);
+      // Drop any empty streaming placeholder before showing the error
+      setMessages(prev => {
+        const cleaned = prev.filter(m => !(m.streaming && m.content === ''));
+        return [...cleaned, { role: 'error', content: errorContent, timestamp: new Date() }];
+      });
+      setError(errorContent);
     }
   };
 
@@ -371,6 +440,10 @@ export default function ChatInterface({ repoId }) {
                       }
                     })}
                     
+                    {message.streaming && (
+                      <span className="inline-block w-1.5 h-3.5 bg-gray-400 dark:bg-gray-500 rounded-sm animate-pulse ml-0.5 align-middle" />
+                    )}
+
                     {message.sources && message.sources.length > 0 && (
                       <SourcesList sources={message.sources} repoUrl={repoId} />
                     )}
