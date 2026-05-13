@@ -19,6 +19,12 @@ try:
 except ImportError:
     Settings = None
 
+
+class _NoOpEmbeddingFunction:
+    """Stops ChromaDB from loading SentenceTransformer — we always supply pre-computed vectors."""
+    def __call__(self, texts):
+        raise RuntimeError("Embeddings must be pre-computed; ChromaDB should not compute them.")
+
 # Load environment variables
 load_dotenv()
 
@@ -324,7 +330,7 @@ def is_repo_indexed(repo_url: str, user_id: str) -> bool:
         try:
             client = get_chromadb_client()
             collection_name = get_collection_name(repo_url, user_id)
-            collection = client.get_collection(name=collection_name)
+            collection = client.get_collection(name=collection_name, embedding_function=_NoOpEmbeddingFunction())
             # Check if collection has any documents
             count = collection.count()
             if count > 0:
@@ -369,13 +375,14 @@ def store_in_chromadb(chunks: List[Dict[str, str]], embeddings: List[List[float]
     try:
         # Try to get existing collection first
         try:
-            collection = client.get_collection(name=collection_name)
+            collection = client.get_collection(name=collection_name, embedding_function=_NoOpEmbeddingFunction())
             print(f"✓ Using existing collection '{collection_name}'")
             # Clear existing collection if re-indexing
             print(f"  Clearing existing data for re-indexing...")
             client.delete_collection(name=collection_name)
             collection = client.create_collection(
                 name=collection_name,
+                embedding_function=_NoOpEmbeddingFunction(),
                 metadata={
                     "description": f"Code documentation chunks for {repo_url}",
                     "repo_url": repo_url
@@ -383,9 +390,9 @@ def store_in_chromadb(chunks: List[Dict[str, str]], embeddings: List[List[float]
             )
             print(f"✓ Recreated collection '{collection_name}'")
         except Exception:
-            # Create new collection without embedding function since we provide our own
             collection = client.create_collection(
                 name=collection_name,
+                embedding_function=_NoOpEmbeddingFunction(),
                 metadata={
                     "description": f"Code documentation chunks for {repo_url}",
                     "repo_url": repo_url
@@ -478,7 +485,7 @@ def get_collection_for_repo(repo_url: str, user_id: str) -> Any:
     collection_name = get_collection_name(repo_url, user_id)
     
     try:
-        collection = client.get_collection(name=collection_name)
+        collection = client.get_collection(name=collection_name, embedding_function=_NoOpEmbeddingFunction())
         # Verify collection has data
         if collection.count() == 0:
             raise ValueError(f"Collection exists but is empty for repository {repo_url}. Please re-index.")
@@ -763,7 +770,7 @@ if __name__ == '__main__':
         # Get collection for search (create if doesn't exist - needed for in-memory ChromaDB 0.3.23)
         client = get_chromadb_client()
         try:
-            collection = client.get_collection(name=COLLECTION_NAME)
+            collection = client.get_collection(name=COLLECTION_NAME, embedding_function=_NoOpEmbeddingFunction())
             # Collection exists, proceed to search
         except Exception:
             # Collection doesn't exist (in-memory was cleared)
