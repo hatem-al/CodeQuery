@@ -589,7 +589,7 @@ async def root():
     }
 
 
-@app.get("/ping")
+@app.api_route("/ping", methods=["GET", "HEAD"])
 async def ping():
     """Quick ping endpoint for health checks."""
     return {"status": "alive", "timestamp": __import__('datetime').datetime.now().isoformat()}
