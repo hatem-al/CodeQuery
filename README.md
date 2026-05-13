@@ -1,5 +1,7 @@
 # CodeQuery
 
+**Live at: https://codequery-frontend.onrender.com/**
+
 An AI-powered code documentation assistant that lets you ask natural language questions about any GitHub repository. Paste a repo URL, wait for indexing, and start querying.
 
 ## How it works
