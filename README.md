@@ -56,6 +56,13 @@ VITE_API_BASE_URL=http://localhost:8000
 npm run dev   # http://localhost:5173
 ```
 
+### Tests
+
+```bash
+cd backend
+python3 -m pytest   # 77 tests, no live services needed
+```
+
 ## Features
 
 - **Streaming responses** — real-time token streaming via SSE

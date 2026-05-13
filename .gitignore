@@ -60,11 +60,11 @@ tmp/
 .DS_Store
 Thumbs.db
 
-# Test files
-backend/tests/
+# Test artifacts (not test files themselves)
 coverage/
 .coverage
 htmlcov/
+.pytest_cache/
 
 # Docker (not used)
 docker-compose.yml
