@@ -106,33 +106,26 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-100 dark:bg-gray-900 flex flex-col transition-colors">
-      {/* Header */}
-      <Header 
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col transition-colors">
+      <Header
         user={user}
         onLogout={handleLogout}
         darkMode={darkMode}
         onToggleDarkMode={() => setDarkMode(!darkMode)}
       />
 
-      {/* Main Content */}
       <main className="flex-1 w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {!loadingRepos && indexedRepos.length === 0 ? (
-          /* Empty State - No repos indexed */
           <EmptyState onRepoIndexed={handleRepoIndexed} />
         ) : (
-          /* Main App - With repos */
           <div className="max-w-7xl mx-auto">
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
-              {/* Left Column - Repository Input */}
               <div className="lg:col-span-1 flex flex-col">
-                <RepoInput 
+                <RepoInput
                   onRepoIndexed={handleRepoIndexed}
                   currentRepo={currentRepo}
                 />
               </div>
-
-              {/* Right Column - Chat Interface */}
               <div className="lg:col-span-2 flex flex-col min-h-0">
                 <div className="flex-1 min-h-[500px] sm:min-h-[600px]">
                   <ChatInterface repoId={currentRepo} />
@@ -143,11 +136,10 @@ function App() {
         )}
       </main>
 
-      {/* Footer */}
-      <footer className="bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 flex-shrink-0 mt-auto">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 sm:py-4">
-          <p className="text-center text-xs sm:text-sm text-gray-600 dark:text-gray-400">
-            Made by Hatem Almasri
+      <footer className="border-t border-gray-200 dark:border-slate-800 flex-shrink-0 mt-auto">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3">
+          <p className="text-center text-xs text-gray-400 dark:text-slate-600">
+            Built by Hatem Almasri
           </p>
         </div>
       </footer>

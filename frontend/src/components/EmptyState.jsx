@@ -4,226 +4,175 @@ import LoadingSpinner from './LoadingSpinner';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
 
-/**
- * EmptyState component - Shows when no repositories are indexed
- */
+const features = [
+  {
+    icon: (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+      </svg>
+    ),
+    title: 'Instant answers',
+    desc: 'Semantic + keyword search across 50K+ lines in milliseconds',
+  },
+  {
+    icon: (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17H3a2 2 0 01-2-2V5a2 2 0 012-2h14a2 2 0 012 2v10a2 2 0 01-2 2h-2" />
+      </svg>
+    ),
+    title: 'GPT-4o explanations',
+    desc: 'Understands logic, not just syntax — explains the why',
+  },
+  {
+    icon: (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+      </svg>
+    ),
+    title: 'Multi-language',
+    desc: 'Python, JavaScript, TypeScript, Java, C++ and more',
+  },
+];
+
 export default function EmptyState({ onRepoIndexed }) {
   const [repoUrl, setRepoUrl] = useState('');
   const [isIndexing, setIsIndexing] = useState(false);
   const [error, setError] = useState(null);
 
-  const pollIndexingStatus = async (repoUrl) => {
+  const pollIndexingStatus = async (url) => {
     const maxAttempts = 60;
     let attempts = 0;
-    
     const poll = async () => {
       try {
-        const encodedUrl = encodeURIComponent(repoUrl);
-        const response = await axios.get(`${API_BASE_URL}/index/status/${encodedUrl}`);
-        const status = response.data;
-        
-        if (status.status === 'completed') {
-          if (onRepoIndexed) {
-            onRepoIndexed(repoUrl);
-          }
+        const encoded = encodeURIComponent(url);
+        const { data } = await axios.get(`${API_BASE_URL}/index/status/${encoded}`);
+        if (data.status === 'completed' || data.status === 'already_indexed') {
+          onRepoIndexed?.(url);
           setRepoUrl('');
           setIsIndexing(false);
-          return true;
-        } else if (status.status === 'error') {
-          setError(status.error || 'Failed to index repository. Please try again.');
+        } else if (data.status === 'error') {
+          setError(data.error || 'Failed to index. Please try again.');
           setIsIndexing(false);
-          return true;
-        } else if (status.status === 'already_indexed') {
-          if (onRepoIndexed) {
-            onRepoIndexed(repoUrl);
-          }
-          setIsIndexing(false);
-          return true;
-        }
-        
-        attempts++;
-        if (attempts < maxAttempts) {
-          setTimeout(poll, 5000);
         } else {
-          setError('Indexing is taking longer than expected. Please check back later.');
-          setIsIndexing(false);
+          attempts++;
+          if (attempts < maxAttempts) setTimeout(poll, 5000);
+          else { setError('Indexing timed out.'); setIsIndexing(false); }
         }
       } catch (err) {
-        if (err.response?.status === 404) {
-          attempts++;
-          if (attempts < maxAttempts) {
-            setTimeout(poll, 5000);
-          } else {
-            setError('Failed to track indexing progress.');
-            setIsIndexing(false);
-          }
-        } else {
-          setError('Error checking indexing status.');
-          setIsIndexing(false);
-        }
+        attempts++;
+        if (err.response?.status === 404 && attempts < maxAttempts) setTimeout(poll, 5000);
+        else { setError('Error checking status.'); setIsIndexing(false); }
       }
     };
-    
     setTimeout(poll, 2000);
   };
 
   const handleIndex = async () => {
-    if (!repoUrl.trim()) {
-      setError('Please enter a GitHub repository URL');
-      return;
-    }
-
-    // Validate GitHub URL
-    const githubUrlPattern = /^https?:\/\/(www\.)?github\.com\/[\w\-\.]+\/[\w\-\.]+(\.git)?(\/.*)?$/;
-    const trimmedUrl = repoUrl.trim();
-    if (!githubUrlPattern.test(trimmedUrl)) {
-      setError('Please enter a valid GitHub repository URL');
-      return;
-    }
+    const trimmed = repoUrl.trim();
+    if (!trimmed) { setError('Please enter a GitHub repository URL'); return; }
+    const valid = /^https?:\/\/(www\.)?github\.com\/[\w\-\.]+\/[\w\-\.]+(\.git)?(\/.*)?$/.test(trimmed);
+    if (!valid) { setError('Please enter a valid GitHub repository URL'); return; }
 
     setIsIndexing(true);
     setError(null);
-
     try {
       const token = localStorage.getItem('token');
-      const response = await axios.post(
+      const { data } = await axios.post(
         `${API_BASE_URL}/index`,
-        {
-          repo_url: trimmedUrl,
-          force_reindex: false
-        },
-        {
-          headers: { Authorization: `Bearer ${token}` },
-          timeout: 60000 // 60 seconds for cold start
-        }
+        { repo_url: trimmed, force_reindex: false },
+        { headers: { Authorization: `Bearer ${token}` }, timeout: 60000 }
       );
-
-      if (response.data.status === 'indexed' || response.data.status === 'already_indexed') {
-        if (onRepoIndexed) {
-          onRepoIndexed(response.data.repo_id);
-        }
-        setRepoUrl('');
+      if (data.status === 'indexed' || data.status === 'already_indexed') {
+        onRepoIndexed?.(data.repo_id);
         setIsIndexing(false);
-      } else if (response.data.status === 'indexing') {
-        pollIndexingStatus(trimmedUrl);
+      } else {
+        pollIndexingStatus(trimmed);
       }
     } catch (err) {
-      let errorMessage = 'Failed to index repository. Please try again.';
-      
-      if (err.code === 'ERR_NETWORK' || err.message === 'Network Error') {
-        errorMessage = 'Cannot connect to backend. Please check your connection.';
-      } else if (err.response?.status === 404) {
-        errorMessage = 'Repository not found or is private.';
-      } else if (err.response?.status === 400 && err.response?.data?.detail) {
-        errorMessage = err.response.data.detail;
-      } else if (err.response?.data?.detail) {
-        errorMessage = err.response.data.detail;
-      }
-      
-      setError(errorMessage);
+      setError(
+        err.response?.data?.detail ||
+        (err.code === 'ERR_NETWORK' ? 'Cannot connect to backend.' : 'Failed to index. Please try again.')
+      );
       setIsIndexing(false);
     }
   };
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-[60vh] px-4">
+    <div className="flex flex-col items-center justify-center min-h-[70vh] px-4 py-16">
       {/* Icon */}
-      <div className="text-6xl mb-4">🔍</div>
-      
-      {/* Heading */}
-      <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-4 text-center">
-        Search Any Codebase with AI
+      <div className="w-16 h-16 bg-indigo-50 dark:bg-indigo-950/50 border border-indigo-100 dark:border-indigo-900 rounded-2xl flex items-center justify-center mb-6 text-indigo-600 dark:text-indigo-400">
+        <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+        </svg>
+      </div>
+
+      <h1 className="text-3xl sm:text-4xl font-bold text-gray-900 dark:text-white mb-3 text-center">
+        Ask your codebase anything
       </h1>
-      
-      {/* Subtitle */}
-      <p className="text-lg text-gray-600 dark:text-gray-300 mb-8 text-center max-w-2xl">
-        Index a GitHub repository and ask questions in natural language
+      <p className="text-gray-500 dark:text-slate-400 text-base sm:text-lg mb-10 text-center max-w-xl">
+        Paste a public GitHub URL to index it, then ask questions in plain English.
       </p>
 
-      {/* Repository Input */}
+      {/* Input */}
       <div className="w-full max-w-2xl mb-12">
-        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-          GitHub Repository URL
-        </label>
-        <div className="flex gap-2">
+        <div className="flex gap-2 p-1.5 bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-700 rounded-xl shadow-sm">
+          <div className="flex items-center pl-3 text-gray-400 dark:text-slate-500 flex-shrink-0">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+            </svg>
+          </div>
           <input
             type="text"
             value={repoUrl}
-            onChange={(e) => {
-              setRepoUrl(e.target.value);
-              setError(null);
-            }}
+            onChange={(e) => { setRepoUrl(e.target.value); setError(null); }}
+            onKeyDown={(e) => e.key === 'Enter' && !isIndexing && handleIndex()}
             placeholder="https://github.com/username/repo"
-            className="flex-1 px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+            className="flex-1 px-2 py-2.5 bg-transparent text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-slate-500 focus:outline-none"
             disabled={isIndexing}
           />
           <button
             onClick={handleIndex}
             disabled={isIndexing || !repoUrl.trim()}
-            className="px-6 py-3 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-lg hover:from-blue-700 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all font-medium shadow-md hover:shadow-lg flex items-center gap-2"
+            className="px-5 py-2.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white rounded-lg font-semibold text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 flex-shrink-0"
           >
             {isIndexing ? (
-              <>
-                <LoadingSpinner size="sm" />
-                <span>Indexing...</span>
-              </>
-            ) : (
-              <span>Index Repository</span>
-            )}
+              <><LoadingSpinner size="sm" /><span>Indexing…</span></>
+            ) : 'Index Repository'}
           </button>
         </div>
-        
+
         {error && (
-          <div className="mt-2 p-3 bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-300 rounded-lg text-sm border border-red-200 dark:border-red-800">
+          <p className="mt-2 text-sm text-red-600 dark:text-red-400 flex items-center gap-1.5 px-1">
+            <svg className="w-4 h-4 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+            </svg>
             {error}
-          </div>
+          </p>
         )}
 
         {isIndexing && (
-          <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
-            <p className="text-sm text-blue-800 dark:text-blue-300">
-              Indexing repository... This may take a few minutes depending on repository size.
-            </p>
+          <div className="mt-3 flex items-center gap-2 px-1 text-sm text-indigo-600 dark:text-indigo-400">
+            <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />
+            Indexing… this takes a few minutes for large repos.
           </div>
         )}
       </div>
 
-      {/* Feature Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full max-w-4xl">
-        {/* Card 1 */}
-        <div className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-md border border-gray-200 dark:border-gray-700 hover:shadow-lg transition-all">
-          <div className="text-4xl mb-3">⚡</div>
-          <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-2">
-            Instant Search
-          </h3>
-          <p className="text-sm text-gray-600 dark:text-gray-300">
-            Semantic search across 50K+ lines of code in milliseconds
-          </p>
-        </div>
-
-        {/* Card 2 */}
-        <div className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-md border border-gray-200 dark:border-gray-700 hover:shadow-lg transition-all">
-          <div className="text-4xl mb-3">🤖</div>
-          <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-2">
-            AI-Powered
-          </h3>
-          <p className="text-sm text-gray-600 dark:text-gray-300">
-            GPT-4 explains code with examples and context
-          </p>
-        </div>
-
-        {/* Card 3 */}
-        <div className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-md border border-gray-200 dark:border-gray-700 hover:shadow-lg transition-all">
-          <div className="text-4xl mb-3">📚</div>
-          <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-2">
-            Multi-Language
-          </h3>
-          <p className="text-sm text-gray-600 dark:text-gray-300">
-            Python, JavaScript, Java, C++, and more
-          </p>
-        </div>
+      {/* Feature cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 w-full max-w-3xl">
+        {features.map((f) => (
+          <div
+            key={f.title}
+            className="bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-xl p-5 hover:border-indigo-200 dark:hover:border-indigo-900 hover:shadow-md transition-all"
+          >
+            <div className="w-9 h-9 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 rounded-lg flex items-center justify-center mb-3">
+              {f.icon}
+            </div>
+            <h3 className="font-semibold text-gray-900 dark:text-white text-sm mb-1">{f.title}</h3>
+            <p className="text-xs text-gray-500 dark:text-slate-400 leading-relaxed">{f.desc}</p>
+          </div>
+        ))}
       </div>
     </div>
   );
 }
-

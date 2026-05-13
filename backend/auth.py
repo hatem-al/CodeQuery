@@ -30,17 +30,10 @@ SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 
-# Validate JWT secret key
-if SECRET_KEY == "your-secret-key-change-in-production" or len(SECRET_KEY) < 32:
-    import warnings
-    warnings.warn(
-        "⚠️  SECURITY WARNING: JWT_SECRET_KEY is using default or weak value. "
-        "Please set a strong JWT_SECRET_KEY environment variable (at least 32 characters) "
-        "for production use. Current key length: {} characters".format(len(SECRET_KEY)),
-        UserWarning
-    )
 
-# User storage path (legacy JSON - kept for migration)
+# LEGACY: users were previously stored in this JSON file. It is no longer used for active storage.
+# All users are now stored in SQLite at data/users.db (see database.py). This path exists only
+# so the one-time migration below can read old records and import them into SQLite.
 USERS_DB_PATH = Path(__file__).parent.parent / "data" / "users.json"
 USERS_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 

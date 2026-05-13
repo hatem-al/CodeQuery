@@ -17,6 +17,7 @@ export default function RepoInput({ onRepoIndexed, currentRepo }) {
   const [indexedRepos, setIndexedRepos] = useState([]);
   const [loadingRepos, setLoadingRepos] = useState(true);
   const [indexingStage, setIndexingStage] = useState('');
+  const [reindexingRepos, setReindexingRepos] = useState(new Set());
 
   // Load indexed repos on mount
   useEffect(() => {
@@ -108,6 +109,54 @@ export default function RepoInput({ onRepoIndexed, currentRepo }) {
     
     // Start polling after a short delay
     setTimeout(poll, 2000);
+  };
+
+  const handleReindex = async (urlToReindex) => {
+    setReindexingRepos(prev => new Set(prev).add(urlToReindex));
+    setError(null);
+    try {
+      const response = await axios.post(`${API_BASE_URL}/index`, {
+        repo_url: urlToReindex,
+        force_reindex: true
+      }, { timeout: 60000 });
+
+      if (response.data.status === 'indexing') {
+        // Poll until done
+        await new Promise((resolve) => {
+          const maxAttempts = 60;
+          let attempts = 0;
+          const poll = async () => {
+            try {
+              const encoded = encodeURIComponent(urlToReindex);
+              const res = await axios.get(`${API_BASE_URL}/index/status/${encoded}`);
+              const s = res.data;
+              if (s.status === 'completed' || s.status === 'already_indexed') {
+                await loadIndexedRepos();
+                resolve();
+              } else if (s.status === 'error') {
+                setError(s.error || 'Re-index failed.');
+                resolve();
+              } else {
+                attempts++;
+                if (attempts < maxAttempts) setTimeout(poll, 5000);
+                else resolve();
+              }
+            } catch {
+              attempts++;
+              if (attempts < maxAttempts) setTimeout(poll, 5000);
+              else resolve();
+            }
+          };
+          setTimeout(poll, 2000);
+        });
+      } else {
+        await loadIndexedRepos();
+      }
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || 'Failed to re-index repository.');
+    } finally {
+      setReindexingRepos(prev => { const next = new Set(prev); next.delete(urlToReindex); return next; });
+    }
   };
 
   const handleIndex = async (forceReindex = false) => {
@@ -257,8 +306,14 @@ export default function RepoInput({ onRepoIndexed, currentRepo }) {
   const isRepoAlreadyIndexed = indexedRepos.some(repo => repo.repo_url === repoUrl.trim());
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-4 sm:p-6 mb-6">
-      <h2 className="text-xl sm:text-2xl font-bold text-gray-800 dark:text-white mb-4">Index Repository</h2>
+    <div className="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 shadow-sm p-4 sm:p-5 mb-4">
+      <h2 className="text-base font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+        <svg className="w-4 h-4 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2 1 3 3 3h10c2 0 3-1 3-3V7c0-2-1-3-3-3H7C5 4 4 5 4 7z" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 11l3 3 3-3" />
+        </svg>
+        Repositories
+      </h2>
       
       {/* Empty State */}
       {!loadingRepos && indexedRepos.length === 0 && !isIndexing && (
@@ -286,14 +341,14 @@ export default function RepoInput({ onRepoIndexed, currentRepo }) {
                 setError(null); // Clear error when user types
               }}
               placeholder="Enter GitHub repository URL (e.g., https://github.com/user/repo)"
-              className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100 dark:disabled:bg-gray-700 disabled:cursor-not-allowed transition-colors bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
+              className="flex-1 px-3 py-2 text-sm border border-gray-200 dark:border-slate-700 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent disabled:bg-gray-100 dark:disabled:bg-slate-800 disabled:cursor-not-allowed transition-colors bg-white dark:bg-slate-800 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-slate-500"
               disabled={isIndexing}
               aria-label="GitHub repository URL"
             />
             <button
               type="submit"
               disabled={isIndexing || !repoUrl.trim()}
-              className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors font-medium min-h-[44px] sm:min-h-0"
+              className="px-4 py-2 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all font-semibold text-sm shadow-sm"
               aria-label="Index repository"
             >
               {isIndexing ? 'Indexing...' : 'Index Repository'}
@@ -380,8 +435,8 @@ export default function RepoInput({ onRepoIndexed, currentRepo }) {
                 key={idx}
                 className={`p-3 rounded-lg border transition-colors ${
                   currentRepo === repo.repo_url
-                    ? 'bg-blue-50 border-blue-300'
-                    : 'bg-gray-50 border-gray-200 hover:bg-gray-100'
+                    ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-300 dark:border-blue-700'
+                    : 'bg-gray-50 dark:bg-slate-800 border-gray-200 dark:border-slate-700 hover:bg-gray-100 dark:hover:bg-slate-700'
                 }`}
               >
                 <div className="flex items-start justify-between gap-2">
@@ -390,8 +445,8 @@ export default function RepoInput({ onRepoIndexed, currentRepo }) {
                     onClick={() => handleSelectRepo(repo.repo_url)}
                     className={`flex-1 text-left text-sm font-medium transition-colors ${
                       currentRepo === repo.repo_url
-                        ? 'text-blue-700'
-                        : 'text-gray-700 hover:text-blue-600'
+                        ? 'text-blue-700 dark:text-blue-400'
+                        : 'text-gray-700 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400'
                     }`}
                     aria-label={`Select repository ${formatRepoName(repo.repo_url)}`}
                   >
@@ -403,6 +458,24 @@ export default function RepoInput({ onRepoIndexed, currentRepo }) {
                       )}
                       <span className="font-mono text-xs break-all">{formatRepoName(repo.repo_url)}</span>
                     </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleReindex(repo.repo_url)}
+                    disabled={reindexingRepos.has(repo.repo_url)}
+                    className="p-1 text-gray-400 hover:text-indigo-600 transition-colors rounded disabled:opacity-50 disabled:cursor-not-allowed"
+                    aria-label={`Re-index repository ${formatRepoName(repo.repo_url)}`}
+                    title="Re-index repository"
+                  >
+                    {reindexingRepos.has(repo.repo_url) ? (
+                      <svg className="w-4 h-4 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                    ) : (
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                    )}
                   </button>
                   <button
                     type="button"

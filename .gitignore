@@ -29,13 +29,14 @@ build/
 .next/
 out/
 
-# IDE
+# IDE / AI tools
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 .cursor/
+.claude/
 
 # Database - SQLite
 data/users.db

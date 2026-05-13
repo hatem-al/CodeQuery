@@ -79,6 +79,8 @@ COLLECTION_NAME = "code_docs"
 
 # Reuse a single client instance to support in-memory ChromaDB clients.
 _CHROMA_CLIENT = None
+# True when persistent init failed and we fell back to in-memory (data lost on restart)
+CHROMA_USING_INMEMORY = False
 
 # Cache query embeddings so repeated questions skip the OpenAI round-trip (~100ms saved each)
 _QUERY_EMBEDDING_CACHE: Dict[str, List[float]] = {}
@@ -245,6 +247,7 @@ def get_chromadb_client():
                 raise Exception("Settings module not available for ChromaDB 0.3.x")
     except Exception as e:
         # Last resort: in-memory client (WARNING: data will be lost on restart)
+        global CHROMA_USING_INMEMORY
         import warnings
         warnings.warn(
             f"Failed to initialize persistent ChromaDB: {e}. "
@@ -253,6 +256,7 @@ def get_chromadb_client():
             RuntimeWarning
         )
         _CHROMA_CLIENT = chromadb.Client()
+        CHROMA_USING_INMEMORY = True
         print(f"⚠ WARNING: Using in-memory ChromaDB. Data will not persist!")
 
     return _CHROMA_CLIENT
