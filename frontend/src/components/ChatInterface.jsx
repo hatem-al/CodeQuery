@@ -468,27 +468,40 @@ export default function ChatInterface({ repoId }) {
                   <p className="whitespace-pre-wrap break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{message.content}</p>
                 ) : (
                   <div>
-                    {extractCodeBlocks(message.content).map((part, partIndex) => {
-                      if (part.type === 'code') {
-                        return (
-                          <div key={partIndex} className="my-3 -mx-1">
-                            <CodeBlock code={part.content} language={part.language} />
-                          </div>
-                        );
-                      } else if (part.type === 'inline-code') {
-                        return (
-                          <code key={partIndex} className="bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded text-[13px] font-mono text-indigo-700 dark:text-indigo-300 border border-slate-200 dark:border-slate-700">
-                            {part.content}
-                          </code>
-                        );
-                      } else {
-                        return (
-                          <p key={partIndex} className="whitespace-pre-wrap mb-2 last:mb-0 break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                            {part.content}
-                          </p>
-                        );
+                    {(() => {
+                      const parts = extractCodeBlocks(message.content);
+                      const rendered = [];
+                      let i = 0;
+                      while (i < parts.length) {
+                        if (parts[i].type === 'code') {
+                          rendered.push(
+                            <div key={i} className="my-3 -mx-1">
+                              <CodeBlock code={parts[i].content} language={parts[i].language} />
+                            </div>
+                          );
+                          i++;
+                        } else {
+                          const groupStart = i;
+                          const group = [];
+                          while (i < parts.length && parts[i].type !== 'code') {
+                            group.push(parts[i]);
+                            i++;
+                          }
+                          rendered.push(
+                            <p key={groupStart} className="whitespace-pre-wrap mb-2 last:mb-0 break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                              {group.map((p, j) =>
+                                p.type === 'inline-code' ? (
+                                  <code key={j} className="bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded text-[13px] font-mono text-indigo-700 dark:text-indigo-300 border border-slate-200 dark:border-slate-700">
+                                    {p.content}
+                                  </code>
+                                ) : p.content
+                              )}
+                            </p>
+                          );
+                        }
                       }
-                    })}
+                      return rendered;
+                    })()}
 
                     {message.streaming && (
                       <span className="inline-block w-1.5 h-3.5 bg-indigo-400 rounded-sm animate-pulse ml-0.5 align-middle" />
