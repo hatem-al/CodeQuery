@@ -27,7 +27,12 @@ except ImportError:
 
 
 # Supported code file extensions
-CODE_EXTENSIONS = {'.py', '.js', '.ts', '.tsx', '.jsx', '.java', '.cpp', '.c', '.h', '.hpp', '.cc', '.cxx'}
+CODE_EXTENSIONS = {
+    '.py', '.js', '.ts', '.tsx', '.jsx', '.java', '.cpp', '.c', '.h', '.hpp', '.cc', '.cxx',
+    '.go', '.rs', '.rb', '.php', '.cs', '.swift', '.kt', '.kts', '.scala',
+    # Docs and config — often exactly what "what does this repo do?" needs
+    '.md', '.rst', '.yaml', '.yml', '.toml', '.json',
+}
 
 # Priority files that should always be included and ranked higher
 PRIORITY_FILES = {
@@ -52,6 +57,15 @@ LANGUAGE_MAP = {
     '.hpp': 'cpp',
     '.cc': 'cpp',
     '.cxx': 'cpp',
+    '.go': 'go',
+    '.rs': 'rust',
+    '.rb': 'ruby',
+    '.php': 'php',
+    '.cs': 'csharp',
+    '.swift': 'swift',
+    '.kt': 'kotlin',
+    '.kts': 'kotlin',
+    '.scala': 'scala',
 }
 
 
@@ -174,30 +188,31 @@ def find_code_files(repo_path: str) -> List[str]:
             f"Please try a smaller repository."
         )
     
-    # Directories to skip
+    # Directories to skip. Note: 'lib', 'libs', 'packages', and 'docs' are NOT
+    # skipped — monorepos keep real source in packages/, many projects in lib/,
+    # and docs are useful retrieval targets for a documentation assistant.
     skip_dirs = {
-        '.git', '__pycache__', 'node_modules', '.venv', 'venv', 'env', 
+        '.git', '__pycache__', 'node_modules', '.venv', 'venv', 'env',
         'dist', 'build', 'target', 'out', 'bin', 'obj',
-        'vendor', 'packages', 'lib', 'libs',
-        'javadoc', 'docs', 'documentation', 'apidocs',
+        'vendor', 'third_party',
+        'javadoc', 'apidocs',
         'test', 'tests', '__tests__', 'spec', 'specs',
         'coverage', '.pytest_cache', '.tox',
         'bower_components', 'jspm_packages',
         '.next', '.nuxt', '.cache', 'public/build',
         'site-packages', 'egg-info'
     }
-    
-    # File patterns to skip
+
+    # File patterns to skip — precise suffixes/names only. Bare substrings like
+    # 'bundle' or 'seed' skip legitimate source files (e.g. seedData.js).
     skip_file_patterns = [
-        '.min.js', '.min.css',           # Minified files
+        '.min.js', '.min.css', '.min.',   # Minified files
         '.bundle.js', '.chunk.js',        # Bundled files
-        'jquery', 'bootstrap', 'lodash',  # Common libraries
-        'bundle', 'vendor', 'polyfill',   # Vendor code
         '.generated.', '.g.dart',         # Generated files
-        'proto_pb', '.pb.go',             # Protocol buffers
-        'migration', 'seed',              # Database migrations
+        '_pb2.py', '.pb.go',              # Protocol buffers
         '.test.', '.spec.',               # Test files
-        '.min.', 'minified',              # Any minified
+        'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml',  # Lock files
+        'poetry.lock', 'cargo.lock', 'composer.lock', 'gemfile.lock',
     ]
     
     for file_path in repo_path_obj.rglob('*'):
@@ -242,11 +257,7 @@ def should_skip_file(file_path: str, skip_file_patterns: List[str]) -> bool:
     # Skip test files
     if '/test/' in file_path_lower or '/tests/' in file_path_lower:
         return True
-    
-    # Skip documentation
-    if '/doc/' in file_path_lower or '/docs/' in file_path_lower:
-        return True
-    
+
     # Skip if matches any pattern
     for pattern in skip_file_patterns:
         if pattern.lower() in file_path_lower:
@@ -413,6 +424,36 @@ def chunk_with_tree_sitter(file_path: str, repo_path: str, language: str) -> Lis
         return chunk_by_patterns(source_code, file_path, language, lines)
 
 
+# Whole-file fallback chunks are split into windows so a single large file
+# doesn't exceed the embedding model's token limit (~8K tokens).
+_WINDOW_LINES = 120
+
+
+def _windowed_chunks(source_code: str, file_path: str, chunk_type: str = 'file') -> List[Dict[str, str]]:
+    """Split a file into fixed-size line windows (one chunk for small files)."""
+    lines = source_code.split('\n')
+    stem = Path(file_path).stem
+    if len(lines) <= _WINDOW_LINES:
+        return [{
+            'code': source_code,
+            'file': file_path,
+            'type': chunk_type,
+            'name': stem,
+            'lines': f"1-{len(lines)}",
+        }]
+    chunks = []
+    for start in range(0, len(lines), _WINDOW_LINES):
+        window = lines[start:start + _WINDOW_LINES]
+        chunks.append({
+            'code': '\n'.join(window),
+            'file': file_path,
+            'type': chunk_type,
+            'name': f"{stem}_part{start // _WINDOW_LINES + 1}",
+            'lines': f"{start + 1}-{start + len(window)}",
+        })
+    return chunks
+
+
 def chunk_by_patterns(source_code: str, file_path: str, language: str, lines: List[str]) -> List[Dict[str, str]]:
     """
     Fallback chunking using regex patterns for functions and classes.
@@ -445,14 +486,8 @@ def chunk_by_patterns(source_code: str, file_path: str, language: str, lines: Li
     
     lang_patterns = patterns.get(language, {})
     if not lang_patterns:
-        # If no patterns, return entire file as one chunk
-        return [{
-            'code': source_code,
-            'file': file_path,
-            'type': 'file',
-            'name': Path(file_path).stem,
-            'lines': f"1-{len(lines)}"
-        }]
+        # No patterns for this language — fall back to windowed whole-file chunks
+        return _windowed_chunks(source_code, file_path)
     
     # Find classes first
     for pattern_type, pattern in lang_patterns.items():
@@ -529,16 +564,10 @@ def chunk_by_patterns(source_code: str, file_path: str, language: str, lines: Li
                     'lines': f"{start_line}-{end_line}"
                 })
     
-    # If no chunks found, return entire file
+    # If no chunks found, return the file in windows
     if not chunks:
-        chunks.append({
-            'code': source_code,
-            'file': file_path,
-            'type': 'file',
-            'name': Path(file_path).stem,
-            'lines': f"1-{len(lines)}"
-        })
-    
+        chunks = _windowed_chunks(source_code, file_path)
+
     return chunks
 
 
@@ -556,26 +585,12 @@ def _parse_single_file(file_path: str, repo_path: str) -> List[Dict[str, str]]:
             if not chunks:
                 full_path = Path(repo_path) / file_path
                 source_code = full_path.read_text(encoding='utf-8')
-                file_lines = source_code.split('\n')
-                chunks = [{
-                    'code': source_code,
-                    'file': file_path,
-                    'type': 'file',
-                    'name': Path(file_path).stem,
-                    'lines': f"1-{len(file_lines)}"
-                }]
+                chunks = _windowed_chunks(source_code, file_path)
         else:
             full_path = Path(repo_path) / file_path
             source_code = full_path.read_text(encoding='utf-8')
-            file_lines = source_code.split('\n')
-            chunk_type = 'documentation' if file_ext == '.md' else 'file'
-            chunks = [{
-                'code': source_code,
-                'file': file_path,
-                'type': chunk_type,
-                'name': Path(file_path).stem,
-                'lines': f"1-{len(file_lines)}"
-            }]
+            chunk_type = 'documentation' if file_ext in ('.md', '.rst') else 'file'
+            chunks = _windowed_chunks(source_code, file_path, chunk_type)
 
         for chunk in chunks:
             chunk['layer'] = layer

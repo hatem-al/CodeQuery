@@ -639,6 +639,42 @@ def _get_bm25_index(collection: Any) -> Tuple[Any, List[str], List[str]]:
     return bm25, ids, docs
 
 
+# Repo overview cache: collection_name → (doc_count, file listing)
+_OVERVIEW_CACHE: Dict[str, Tuple[int, str]] = {}
+_OVERVIEW_MAX_FILES = 200
+
+
+def get_repo_overview(collection: Any) -> str:
+    """
+    Compact listing of every indexed file in the collection, for grounding
+    broad questions ("what does this repo do?") that top-k retrieval alone
+    can't answer. Cached per collection, rebuilt when the doc count changes.
+    """
+    try:
+        name = getattr(collection, 'name', 'default')
+        count = collection.count()
+        cached = _OVERVIEW_CACHE.get(name)
+        if cached and cached[0] == count:
+            return cached[1]
+
+        data = collection.get(include=['metadatas'])
+        files = sorted({
+            m.get('file') for m in (data.get('metadatas') or [])
+            if isinstance(m, dict) and m.get('file')
+        })
+        if len(files) > _OVERVIEW_MAX_FILES:
+            listing = '\n'.join(files[:_OVERVIEW_MAX_FILES])
+            listing += f"\n... and {len(files) - _OVERVIEW_MAX_FILES} more files"
+        else:
+            listing = '\n'.join(files)
+
+        _OVERVIEW_CACHE[name] = (count, listing)
+        return listing
+    except Exception as e:
+        print(f"Failed to build repo overview: {e}")
+        return ""
+
+
 def _rrf_fuse(ranked_lists: List[List[str]], k: int = 60) -> List[str]:
     """Reciprocal Rank Fusion over multiple ranked ID lists."""
     scores: Dict[str, float] = {}
@@ -715,6 +751,7 @@ def hybrid_search_code(
                     'metadata': meta,
                     'similarity': 0.05,  # BM25-only baseline
                     'id': doc_id,
+                    'retrieval': 'bm25',  # exempt from similarity thresholds downstream
                 }
         except Exception as e:
             print(f"Failed to fetch BM25-only results: {e}")
@@ -725,7 +762,7 @@ def hybrid_search_code(
         if doc_id not in result_by_id:
             continue
         r = result_by_id[doc_id]
-        if r.get('similarity', 0) < similarity_threshold:
+        if r.get('retrieval') != 'bm25' and r.get('similarity', 0) < similarity_threshold:
             continue
         ordered.append(r)
         if len(ordered) >= top_k:

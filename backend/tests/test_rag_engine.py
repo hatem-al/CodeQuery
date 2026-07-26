@@ -1,4 +1,4 @@
-"""Unit tests for the AdvancedRAG engine: intent classification, reranking, multi-hop search."""
+"""Unit tests for the AdvancedRAG engine: intent classification, concept extraction, retrieval."""
 
 from unittest.mock import MagicMock
 
@@ -81,35 +81,49 @@ class TestConceptExtraction:
         assert ctx.main_concept  # never empty
 
 
-# ── rerank_by_source ─────────────────────────────────────────────────────────
+# ── retrieval is language-neutral ────────────────────────────────────────────
 
-class TestRerank:
-    def test_python_boosted_over_jsx_for_backend_query(self, engine):
+class TestRetrievalOrdering:
+    """The engine must preserve the search function's relevance order and must
+    not penalize frontend files or boost Python — repos in any language get
+    the same treatment."""
+
+    def _engine_with_results(self, results):
+        def stub(query, collection, **kwargs):
+            return list(results)
+        return AdvancedRAG(stub, MagicMock())
+
+    def test_search_order_preserved(self):
         results = [
             _make_chunk("frontend/src/App.jsx", similarity=0.95),
             _make_chunk("backend/auth.py", similarity=0.70),
         ]
-        reranked = engine.rerank_by_source(results, "how does authentication work?")
-        assert reranked[0]["metadata"]["file"] == "backend/auth.py"
+        eng = self._engine_with_results(results)
+        ctx = QueryContext(intent="architecture", main_concept="auth", depth=3,
+                           original_query="how does authentication work?")
+        out = eng.multi_hop_search(ctx, top_k=5)
+        assert out[0]["metadata"]["file"] == "frontend/src/App.jsx"
 
-    def test_ui_query_preserves_original_order(self, engine):
-        results = [
-            _make_chunk("frontend/src/App.jsx", similarity=0.95),
-            _make_chunk("backend/auth.py", similarity=0.70),
-        ]
-        reranked = engine.rerank_by_source(results, "how does the React component render?")
-        assert reranked[0]["metadata"]["file"] == "frontend/src/App.jsx"
+    def test_no_language_filter_passed_to_search(self):
+        captured = []
 
-    def test_empty_results_handled(self, engine):
-        assert engine.rerank_by_source([], "some query") == []
+        def stub(query, collection, **kwargs):
+            captured.append(kwargs)
+            return [_make_chunk("src/lib.rs")]
 
-    def test_all_python_files_keep_similarity_order(self, engine):
-        results = [
-            _make_chunk("backend/main.py", similarity=0.9),
-            _make_chunk("backend/auth.py", similarity=0.7),
-        ]
-        reranked = engine.rerank_by_source(results, "explain the database")
-        assert reranked[0]["metadata"]["file"] == "backend/main.py"
+        eng = AdvancedRAG(stub, MagicMock())
+        ctx = QueryContext(intent="architecture", main_concept="parser", depth=3,
+                           original_query="how does the parser work?")
+        eng.multi_hop_search(ctx, top_k=5)
+        assert all(kw.get("where_filter") is None for kw in captured)
+
+    def test_respects_result_limit(self):
+        results = [_make_chunk(f"src/file{i}.go", similarity=0.9) for i in range(50)]
+        eng = self._engine_with_results(results)
+        ctx = QueryContext(intent="location", main_concept="handler", depth=1,
+                           original_query="where is the handler?")
+        out = eng.multi_hop_search(ctx, top_k=8)
+        assert len(out) <= 16  # top_k * 2
 
 
 # ── organize_chunks ───────────────────────────────────────────────────────────

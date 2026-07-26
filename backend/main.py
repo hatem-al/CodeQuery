@@ -38,6 +38,7 @@ from embeddings import (
     store_in_chromadb,
     search_code,
     hybrid_search_code,
+    get_repo_overview,
     is_repo_indexed,
     get_chromadb_client,
     get_collection_for_repo,
@@ -180,12 +181,11 @@ CRITICAL INSTRUCTIONS:
 2. ANALYZE IMPLEMENTATION — Trace through the actual logic flow: what conditions are checked, what data is processed, what transformations occur.
 3. SHOW THE CODE — Include actual code snippets in markdown blocks when explaining.
 4. BE SPECIFIC — Instead of "handles errors", explain what the catch block actually does step by step.
-5. IGNORE UI CODE — Skip React components, JSX, loading spinners, CSS. Focus on server logic, functions, data processing.
-6. NO HEDGING — Avoid "likely", "probably", "seems". State what the code does based on what you see.
-7. NO FABRICATION — If the snippets don't contain enough information, say "I don't see this implemented in the indexed code."
-8. NO SPECULATION — Only describe what the indexed code actually does.
-9. NO CONCLUSIONS — Do not add a "Conclusion" or "Summary" section.
-10. CONVERSATION CONTEXT — Reference previous answers when relevant.
+5. NO HEDGING — Avoid "likely", "probably", "seems". State what the code does based on what you see.
+6. NO FABRICATION — If the snippets don't contain enough information, say "I don't see this implemented in the indexed code."
+7. NO SPECULATION — Only describe what the indexed code actually does.
+8. NO CONCLUSIONS — Do not add a "Conclusion" or "Summary" section.
+9. CONVERSATION CONTEXT — Reference previous answers when relevant.
 
 FORMATTING RULES:
 - Use `backticks` for inline code — ALWAYS on the same line, never surrounded by newlines
@@ -276,20 +276,13 @@ async def _build_chat_payload(
 
     low_confidence = [r for r in search_results if r.get("similarity", 0.0) < 0.3]
 
-    # Organize and cap chunks by depth
-    organized = rag_engine.organize_chunks(search_results)
-    all_chunks: list = []
-    for chunks in organized.get("by_file_type", {}).values():
-        all_chunks.extend(chunks)
-    for chunks in organized.get("by_content", {}).values():
-        for c in chunks:
-            if c not in all_chunks:
-                all_chunks.append(c)
-    if not all_chunks:
-        all_chunks = search_results
-
+    # Filter by similarity and cap by depth. BM25 keyword matches carry a
+    # baseline similarity of 0.05, so they are exempt from the threshold.
     depth_cap = {1: 4, 2: 6, 3: 10}.get(query_context.depth, 6)
-    all_chunks = [c for c in all_chunks if c.get("similarity", 0.0) >= 0.3][:depth_cap]
+    all_chunks = [
+        r for r in search_results
+        if r.get("similarity", 0.0) >= 0.3 or r.get("retrieval") == "bm25"
+    ][:depth_cap]
     if not all_chunks:
         all_chunks = search_results[:depth_cap]
 
@@ -314,11 +307,27 @@ async def _build_chat_payload(
         if alts:
             clarification += f"Low-confidence results. Did you mean: {', '.join(alts[:3])}? "
 
-    enhanced_context = rag_engine.build_prompt(query, organized, query_context)
+    # The prompt context is exactly the chunks shown as sources, plus a repo
+    # file listing so broad questions ("what does this repo do?") have
+    # grounding beyond the top-k snippets.
+    intent_notes = {
+        "location": "The user is asking WHERE to find something. Focus on file paths and locations.",
+        "usage": "The user is asking HOW TO USE something. Focus on examples, function calls, and integration patterns.",
+        "architecture": "The user is asking HOW something WORKS. Explain the architecture, flow, and implementation.",
+    }
+    repo_overview = get_repo_overview(collection)
+
+    def _render_context() -> str:
+        parts = [intent_notes.get(query_context.intent, "")]
+        if repo_overview:
+            parts.append(f"Files in the indexed repository:\n{repo_overview}")
+        parts.append("Relevant code snippets:\n" + "\n".join(context_parts))
+        return "\n\n".join(p for p in parts if p)
+
     user_prompt = _USER_PROMPT_TEMPLATE.format(
         clarification=clarification,
         query=query,
-        enhanced_context=enhanced_context,
+        enhanced_context=_render_context(),
     )
 
     # Build messages with history
@@ -332,11 +341,10 @@ async def _build_chat_payload(
         context_parts.pop()
         sources_dict.pop()
         sources_obj.pop()
-        shorter = "\n".join(context_parts)
         user_prompt = _USER_PROMPT_TEMPLATE.format(
             clarification=clarification,
             query=query,
-            enhanced_context=shorter,
+            enhanced_context=_render_context(),
         )
         messages[-1] = {"role": "user", "content": user_prompt}
 

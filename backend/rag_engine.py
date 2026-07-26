@@ -148,24 +148,15 @@ class AdvancedRAG:
     
     def multi_hop_search(self, context: QueryContext, top_k: int = 8) -> List[Dict]:
         """
-        Perform multi-hop search based on query context.
-        
-        Args:
-            context: QueryContext with intent and concepts
-            top_k: Number of results per hop
-            
-        Returns:
-            List of code chunks from multi-hop search
+        Retrieve relevant chunks via hybrid search, preserving the fused
+        relevance order returned by the search function.
+
+        When a HyDE document is set it is used as the primary search query
+        (better code-space proximity for embeddings); a second pass with the
+        literal user query keeps keyword (BM25) grounding.
         """
         all_results = []
         seen_ids = set()
-
-        query_lower = context.original_query.lower()
-        is_ui = any(kw in query_lower for kw in self._UI_QUERY_KEYWORDS)
-        backend_filter = {"language": "python"} if not is_ui else None
-
-        # Use HyDE document for embedding when available (better code-space proximity)
-        embed_query = context.hyde_document if context.hyde_document else context.original_query
 
         def _add_results(results):
             for result in results:
@@ -174,154 +165,27 @@ class AdvancedRAG:
                     seen_ids.add(result_id)
                     all_results.append(result)
 
-        # First hop — Python-only for backend queries (forces backend chunks into result set)
-        if backend_filter:
-            _add_results(self.search_func(
-                embed_query,
-                self.collection,
-                top_k=top_k,
-                similarity_threshold=0.1,
-                where_filter=backend_filter
-            ))
+        embed_query = context.hyde_document if context.hyde_document else context.original_query
 
-        # Broad first hop — catches non-Python files and fills any gaps
         _add_results(self.search_func(
             embed_query,
             self.collection,
-            top_k=top_k,
-            similarity_threshold=0.2
+            top_k=top_k * 2,
+            similarity_threshold=0.1
         ))
 
-        # Extract related concepts from results so far
-        if context.depth > 1 and all_results:
-            related_concepts = self._extract_related_concepts(all_results[:top_k])
-            context.related_concepts = related_concepts[:5]
+        # HyDE replaced the literal query above — run it too so exact
+        # identifiers from the user's question still match via BM25
+        if context.hyde_document:
+            _add_results(self.search_func(
+                context.original_query,
+                self.collection,
+                top_k=top_k,
+                similarity_threshold=0.1
+            ))
 
-        # Second hop: related concepts
-        if context.depth >= 2 and context.related_concepts:
-            for concept in context.related_concepts:
-                _add_results(self.search_func(
-                    concept,
-                    self.collection,
-                    top_k=top_k // 2,
-                    similarity_threshold=0.2
-                ))
-
-        # Third hop: usage/configuration patterns
-        if context.depth >= 3:
-            usage_queries = [
-                f"{context.main_concept} configuration",
-                f"how {context.main_concept} works"
-            ]
-            for usage_query in usage_queries:
-                _add_results(self.search_func(
-                    usage_query,
-                    self.collection,
-                    top_k=top_k // 4,
-                    similarity_threshold=0.2
-                ))
-
-        # Sort using reranking scores so backend files stay on top for non-UI queries
-        all_results = self.rerank_by_source(all_results, context.original_query)
-
-        # Limit total results
         return all_results[:top_k * 2]
 
-    # UI-related keywords that indicate the query is about frontend/React code
-    _UI_QUERY_KEYWORDS = {
-        'frontend', 'ui', 'component', 'react', 'jsx', 'tsx', 'css', 'style',
-        'render', 'html', 'button', 'form', 'page', 'screen', 'view', 'display',
-        'modal', 'sidebar', 'navbar', 'dropdown', 'input', 'checkbox', 'tailwind',
-        'dark mode', 'theme', 'layout', 'animation'
-    }
-
-    def rerank_by_source(self, results: List[Dict], query: str) -> List[Dict]:
-        """
-        Rerank results to prioritize backend/Python files over frontend files
-        unless the query is explicitly about UI/frontend.
-        """
-        query_lower = query.lower()
-        is_ui_query = any(kw in query_lower for kw in self._UI_QUERY_KEYWORDS)
-
-        if is_ui_query:
-            return results  # Don't rerank UI queries
-
-        def _score(result: Dict) -> float:
-            base = result.get('similarity', 0.0)
-            file_path = result.get('metadata', {}).get('file', '').lower()
-            # Penalise frontend files heavily for non-UI queries
-            if 'frontend/' in file_path or file_path.endswith(('.jsx', '.tsx')):
-                return base * 0.25
-            # Boost for Python backend files
-            if file_path.endswith('.py'):
-                return base * 1.3
-            return base
-
-        return sorted(results, key=_score, reverse=True)
-    
-    def _extract_related_concepts(self, chunks: List[Dict]) -> List[str]:
-        """
-        Extract related concepts from code chunks.
-        
-        Args:
-            chunks: List of code chunks from search results
-            
-        Returns:
-            List of related concept strings
-        """
-        concepts = set()
-        
-        for chunk in chunks:
-            code = chunk.get('code', '')
-            metadata = chunk.get('metadata', {})
-            file_path = metadata.get('file', '')
-            
-            # Extract imports/requires
-            import_patterns = [
-                r'import\s+.*?\s+from\s+[\'"]([^\'"]+)[\'"]',  # ES6 imports
-                r'require\([\'"]([^\'"]+)[\'"]\)',  # CommonJS requires
-                r'from\s+[\'"]([^\'"]+)[\'"]',  # Python imports
-                r'import\s+([^\s]+)',  # Simple imports
-            ]
-            
-            for pattern in import_patterns:
-                matches = re.findall(pattern, code, re.IGNORECASE)
-                for match in matches:
-                    # Extract module name (last part of path)
-                    module = match.split('/')[-1].split('.')[0]
-                    if module and len(module) > 2:
-                        concepts.add(module)
-            
-            # Extract function calls (simplified)
-            function_call_pattern = r'(\w+)\s*\([^)]*\)'
-            function_calls = re.findall(function_call_pattern, code)
-            for func in function_calls[:10]:  # Limit to first 10
-                if func and len(func) > 2 and not func[0].islower() or func in ['use', 'get', 'set', 'has', 'is']:
-                    # Skip common words, keep technical terms
-                    if func not in ['if', 'for', 'while', 'return', 'const', 'let', 'var']:
-                        concepts.add(func)
-            
-            # Extract class names
-            class_pattern = r'class\s+(\w+)'
-            classes = re.findall(class_pattern, code)
-            for cls in classes:
-                concepts.add(cls)
-            
-            # Extract from file path (directory names often indicate concepts)
-            path_parts = file_path.split('/')
-            for part in path_parts:
-                if part and part not in ['src', 'lib', 'app', 'components', 'utils', 'helpers']:
-                    if len(part) > 2:
-                        concepts.add(part)
-        
-        # Filter and return most relevant concepts
-        filtered_concepts = [
-            c for c in concepts 
-            if len(c) > 2 and c.lower() not in ['the', 'and', 'or', 'not', 'for', 'with']
-        ]
-        
-        return list(filtered_concepts)[:10]  # Return top 10
-    
     def organize_chunks(self, chunks: List[Dict]) -> Dict[str, List[Dict]]:
         """
         Organize chunks by file type and content type.
@@ -403,59 +267,3 @@ class AdvancedRAG:
             return 'config'
         
         return 'other'
-    
-    def build_prompt(self, query: str, organized_chunks: Dict, context: QueryContext) -> str:
-        """
-        Build a context-aware prompt for the LLM.
-        
-        Args:
-            query: Original user query
-            organized_chunks: Organized chunks dictionary
-            context: QueryContext with intent and concepts
-            
-        Returns:
-            Formatted prompt string
-        """
-        prompt_parts = []
-        
-        # Add intent-specific instructions
-        if context.intent == 'location':
-            prompt_parts.append("The user is asking WHERE to find something. Focus on file paths and locations.")
-        elif context.intent == 'usage':
-            prompt_parts.append("The user is asking HOW TO USE something. Focus on examples, function calls, and integration patterns.")
-        elif context.intent == 'architecture':
-            prompt_parts.append("The user is asking HOW something WORKS. Provide a comprehensive explanation of the architecture, flow, and implementation.")
-        
-        # Add organized context
-        prompt_parts.append(f"\nMain concept: {context.main_concept}")
-        if context.related_concepts:
-            prompt_parts.append(f"Related concepts: {', '.join(context.related_concepts[:5])}")
-        
-        # Add chunks organized by file type
-        by_file_type = organized_chunks.get('by_file_type', {})
-        if by_file_type:
-            prompt_parts.append("\nCode organized by file type:")
-            for file_type, chunks in by_file_type.items():
-                if chunks:
-                    prompt_parts.append(f"\n--- {file_type.upper()} FILES ---")
-                    for i, chunk in enumerate(chunks[:3], 1):  # Limit to 3 per type
-                        file_path = chunk['metadata']['file']
-                        lines = chunk['metadata']['lines']
-                        code = chunk['code']
-                        prompt_parts.append(f"\n{file_path} (lines {lines}):\n{code}\n")
-        
-        # Add chunks organized by content type
-        by_content = organized_chunks.get('by_content', {})
-        if by_content:
-            prompt_parts.append("\nCode organized by content type:")
-            for content_type, chunks in by_content.items():
-                if chunks and content_type != 'other':
-                    prompt_parts.append(f"\n--- {content_type.upper()} ---")
-                    for i, chunk in enumerate(chunks[:2], 1):  # Limit to 2 per type
-                        file_path = chunk['metadata']['file']
-                        lines = chunk['metadata']['lines']
-                        code = chunk['code']
-                        prompt_parts.append(f"\n{file_path} (lines {lines}):\n{code}\n")
-        
-        return "\n".join(prompt_parts)
-
